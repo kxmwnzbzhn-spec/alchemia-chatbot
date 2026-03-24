@@ -245,6 +245,24 @@ app.post("/api/demo/chat", async (req, res) => {
   }
 });
 
+app.get("/api/diagnostics", async (req, res) => {
+  const results = {};
+  try {
+    const https = require('https');
+    await new Promise((resolve) => {
+      const r = https.get('https://api.anthropic.com', (resp) => { results.anthropic_reach = `HTTP ${resp.statusCode}`; resolve(); });
+      r.on('error', (e) => { results.anthropic_reach = `ERROR: ${e.message}`; resolve(); });
+      r.setTimeout(5000, () => { results.anthropic_reach = 'TIMEOUT'; r.destroy(); resolve(); });
+    });
+  } catch(e) { results.anthropic_reach = `EXCEPTION: ${e.message}`; }
+  const key = process.env.ANTHROPIC_API_KEY || '';
+  results.key_prefix = key ? key.substring(0,15) + '...' : 'NOT SET';
+  results.key_length = key.length;
+  results.key_has_spaces = key !== key.trim();
+  results.model = "claude-sonnet-4-5";
+  res.json(results);
+});
+
 app.get("/api/incidents", (req, res) => {
   const incidents = getTodayIncidents();
   res.json({ incidents, total: incidents.length });
