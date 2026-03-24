@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Alchemia Lab — Panel Chatbot</title>
+<style>
+  :root { --gold:#c9a84c; --dark:#0a0a0a; --card:#111; --border:rgba(201,168,76,.2); }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--dark); color:#e8dcc8; font-family:'Segoe UI',sans-serif; min-height:100vh; }
+  header { background:#0f0d09; border-bottom:1px solid var(--border); padding:20px 32px; display:flex; align-items:center; gap:16px; }
+  header h1 { font-size:1.2rem; color:var(--gold); letter-spacing:.1em; }
+  header span { font-size:.75rem; color:#6b6055; letter-spacing:.2em; text-transform:uppercase; }
+  .status-dot { width:8px; height:8px; border-radius:50%; background:#22c55e; animation:pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+  .container { max-width:1200px; margin:0 auto; padding:32px; display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+  @media(max-width:768px) { .container { grid-template-columns:1fr; padding:16px; } }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:4px; padding:24px; }
+  .card h2 { font-size:.75rem; letter-spacing:.2em; text-transform:uppercase; color:var(--gold); margin-bottom:20px; }
+  .chat-box { height:320px; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:12px; background:#0a0a0a; border:1px solid var(--border); border-radius:4px; margin-bottom:12px; }
+  .msg { max-width:80%; padding:10px 14px; border-radius:4px; font-size:.9rem; line-height:1.5; }
+  .msg.user { background:rgba(201,168,76,.12); color:#e8dcc8; align-self:flex-end; border:1px solid rgba(201,168,76,.2); }
+  .msg.bot { background:#161410; color:#c8bfb0; align-self:flex-start; border:1px solid rgba(255,255,255,.06); }
+  .msg.bot strong { color:var(--gold); }
+  .input-row { display:flex; gap:8px; }
+  .input-row input { flex:1; background:#0a0a0a; border:1px solid var(--border); color:#e8dcc8; padding:10px 14px; border-radius:4px; font-size:.9rem; outline:none; }
+  .input-row input:focus { border-color:var(--gold); }
+  .btn { background:transparent; border:1px solid var(--gold); color:var(--gold); padding:10px 20px; cursor:pointer; font-size:.75rem; letter-spacing:.15em; text-transform:uppercase; border-radius:4px; transition:all .2s; }
+  .btn:hover { background:var(--gold); color:#0a0a0a; }
+  .btn.danger { border-color:#ef4444; color:#ef4444; }
+  .btn.danger:hover { background:#ef4444; color:#fff; }
+  .incidents-list { display:flex; flex-direction:column; gap:8px; max-height:400px; overflow-y:auto; }
+  .incident { padding:14px 16px; background:#0a0a0a; border:1px solid var(--border); border-radius:4px; }
+  .incident-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+  .inc-type { font-size:.7rem; letter-spacing:.14em; text-transform:uppercase; color:var(--gold); }
+  .inc-order { font-size:.8rem; color:#9e9282; }
+  .inc-detail { font-size:.85rem; color:#6b6055; line-height:1.5; }
+  .badge { padding:2px 8px; border-radius:20px; font-size:.7rem; letter-spacing:.1em; text-transform:uppercase; }
+  .badge.open { background:rgba(239,68,68,.1); color:#ef4444; border:1px solid rgba(239,68,68,.2); }
+  .badge.resolved { background:rgba(34,197,94,.1); color:#22c55e; border:1px solid rgba(34,197,94,.2); }
+  .stats-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:20px; }
+  .stat { text-align:center; padding:16px; background:#0a0a0a; border:1px solid var(--border); border-radius:4px; }
+  .stat-num { font-size:2rem; color:var(--gold); font-family:Georgia,serif; line-height:1; }
+  .stat-label { font-size:.65rem; letter-spacing:.16em; text-transform:uppercase; color:#5a5248; margin-top:4px; }
+  .typing { display:none; align-self:flex-start; padding:10px 14px; background:#161410; border:1px solid rgba(255,255,255,.06); border-radius:4px; }
+  .typing span { display:inline-block; width:6px; height:6px; background:#5a5248; border-radius:50%; animation:bounce .8s infinite; margin:0 2px; }
+  .typing span:nth-child(2) { animation-delay:.15s; }
+  .typing span:nth-child(3) { animation-delay:.3s; }
+  @keyframes bounce { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-4px)} }
+</style>
+</head>
+<body>
+<header>
+  <div class="status-dot" id="statusDot"></div>
+  <div>
+    <h1>THE ALCHEMIA LAB</h1>
+    <span>Panel de Chatbot WhatsApp</span>
+  </div>
+</header>
+<div class="container">
+  <!-- Chat de prueba -->
+  <div class="card">
+    <h2>💬 Probar chatbot</h2>
+    <div class="stats-grid">
+      <div class="stat"><div class="stat-num" id="statSessions">—</div><div class="stat-label">Sesiones</div></div>
+      <div class="stat"><div class="stat-num" id="statIncidents">—</div><div class="stat-label">Incidencias hoy</div></div>
+      <div class="stat"><div class="stat-num" id="statStatus">—</div><div class="stat-label">Estado</div></div>
+    </div>
+    <div class="chat-box" id="chatBox">
+      <div class="msg bot">Hola 🌿 Soy *Alma*, la asistente de <strong>The Alchemia Lab</strong>. ¿En qué te puedo ayudar hoy?</div>
+    </div>
+    <div class="typing" id="typing"><span></span><span></span><span></span></div>
+    <div class="input-row" style="margin-top:8px">
+      <input type="text" id="msgInput" placeholder="Escribe un mensaje de prueba..." onkeydown="if(event.key==='Enter')sendMsg()">
+      <button class="btn" onclick="sendMsg()">Enviar</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+      <button class="btn" onclick="setMsg('¿Cuánto cuesta el perfume Copal Intenso?')">🧴 Precio</button>
+      <button class="btn" onclick="setMsg('Mi pedido #1234 no ha llegado')">📦 Pedido</button>
+      <button class="btn" onclick="setMsg('¿Tienen fragancias unisex?')">🔍 Buscar</button>
+    </div>
+  </div>
+
+  <!-- Incidencias -->
+  <div class="card">
+    <h2>🚨 Incidencias del día</h2>
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <button class="btn" onclick="loadIncidents()">↻ Actualizar</button>
+      <button class="btn" onclick="sendReport()">📊 Enviar reporte</button>
+    </div>
+    <div class="incidents-list" id="incidentsList">
+      <div style="color:#5a5248;text-align:center;padding:32px;font-size:.85rem">Sin incidencias registradas hoy</div>
+    </div>
+  </div>
+</div>
+
+<script>
+let phone = 'panel_' + Math.random().toString(36).slice(2,8);
+
+async function checkHealth() {
+  try {
+    const r = await fetch('/api/health');
+    const d = await r.json();
+    document.getElementById('statusDot').style.background = d.status==='ok' ? '#22c55e' : '#ef4444';
+    document.getElementById('statSessions').textContent = d.sessions;
+    document.getElementById('statIncidents').textContent = d.todayIncidents;
+    document.getElementById('statStatus').textContent = d.env.whatsapp ? '✓' : '✗';
+  } catch { document.getElementById('statusDot').style.background = '#ef4444'; }
+}
+
+function formatBotMsg(text) {
+  return text.replace(/\*([^*]+)\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
+}
+
+async function sendMsg() {
+  const input = document.getElementById('msgInput');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  const box = document.getElementById('chatBox');
+  box.innerHTML += `<div class="msg user">${text}</div>`;
+  const typing = document.getElementById('typing');
+  typing.style.display = 'flex';
+  box.scrollTop = box.scrollHeight;
+  try {
+    const r = await fetch('/api/demo/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({phone, message:text}) });
+    const d = await r.json();
+    typing.style.display = 'none';
+    box.innerHTML += `<div class="msg bot">${formatBotMsg(d.reply || d.error)}</div>`;
+    box.scrollTop = box.scrollHeight;
+    loadIncidents();
+    checkHealth();
+  } catch(e) { typing.style.display='none'; box.innerHTML += `<div class="msg bot" style="color:#ef4444">Error de conexión</div>`; }
+}
+
+function setMsg(text) { document.getElementById('msgInput').value = text; }
+
+async function loadIncidents() {
+  const r = await fetch('/api/incidents');
+  const d = await r.json();
+  const list = document.getElementById('incidentsList');
+  if (!d.incidents.length) { list.innerHTML = '<div style="color:#5a5248;text-align:center;padding:32px;font-size:.85rem">Sin incidencias hoy 🌿</div>'; return; }
+  list.innerHTML = d.incidents.map(i => `
+    <div class="incident">
+      <div class="incident-header">
+        <span class="inc-type">${i.type}</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="inc-order">#${i.orderNumber}</span>
+          <span class="badge ${i.status}">${i.status}</span>
+        </div>
+      </div>
+      <div class="inc-detail">${i.clientName} · ${i.phone}</div>
+      <div class="inc-detail" style="margin-top:4px">${i.detail}</div>
+      ${i.status==='open' ? `<button class="btn danger" style="margin-top:10px;padding:6px 14px;font-size:.65rem" onclick="resolve('${i.id}')">Resolver</button>` : ''}
+    </div>
+  `).join('');
+}
+
+async function resolve(id) {
+  await fetch(`/api/incidents/${id}/resolve`, {method:'PATCH'});
+  loadIncidents();
+}
+
+async function sendReport() {
+  const btn = event.target;
+  btn.textContent = 'Enviando...';
+  const r = await fetch('/api/report/send', {method:'POST'});
+  const d = await r.json();
+  btn.textContent = d.ok ? '✓ Enviado' : '✗ Error';
+  setTimeout(() => btn.textContent = '📊 Enviar reporte', 3000);
+}
+
+checkHealth();
+loadIncidents();
+setInterval(checkHealth, 30000);
+</script>
+</body>
+</html>
