@@ -176,7 +176,7 @@ async function processMessage(phone, userMessage) {
   let finalResponse = "";
   for (let i = 0; i < 5; i++) {
     const response = await claude.messages.create({
-      model: "claude-sonnet-4-20250514", max_tokens: 1024,
+      model: "claude-sonnet-4-5", max_tokens: 1024,
       system: SYSTEM_PROMPT, tools, messages
     });
     if (response.stop_reason === "end_turn") {
@@ -239,7 +239,10 @@ app.post("/api/demo/chat", async (req, res) => {
     if (!message) return res.status(400).json({ error: "Mensaje requerido" });
     const reply = await processMessage(phone, message);
     res.json({ reply });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { 
+    console.error('[DEMO CHAT ERROR]', err.message, err.status);
+    res.status(500).json({ error: err.message, type: err.constructor.name }); 
+  }
 });
 
 app.get("/api/incidents", (req, res) => {
