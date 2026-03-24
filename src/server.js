@@ -7,13 +7,30 @@
 require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
-const Anthropic = require("@anthropic-ai/sdk");
+
 const path = require("path");
 const { registerIncident, resolveIncident, getTodayIncidents, detectIncidentType, extractOrderNumber, readData } = require("./incidents");
 const { startScheduler, runDailyReport } = require("./scheduler");
 
 const app = express();
-const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+// Llamada directa a Anthropic API via axios (sin SDK)
+async function callClaude({ system, messages, tools, max_tokens = 1024 }) {
+  const apiKey = (process.env.ANTHROPIC_API_KEY || '').trim();
+  const body = { model: "claude-haiku-4-5", max_tokens, system, messages };
+  if (tools && tools.length) body.tools = tools;
+  const response = await axios.post('https://api.anthropic.com/v1/messages', body, {
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    timeout: 30000,
+  });
+  return response.data;
+}
+
+
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "../public")));
@@ -175,8 +192,7 @@ async function processMessage(phone, userMessage) {
   let messages = [...session.history];
   let finalResponse = "";
   for (let i = 0; i < 5; i++) {
-    const response = await claude.messages.create({
-      model: "claude-sonnet-4-5", max_tokens: 1024,
+    const response = await callClaude({
       system: SYSTEM_PROMPT, tools, messages
     });
     if (response.stop_reason === "end_turn") {
