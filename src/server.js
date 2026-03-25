@@ -242,9 +242,10 @@ app.post("/webhook", async (req, res) => {
 
 async function sendWhatsAppMessage(to, text) {
   try {
-    await axios.post(`https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
-      messaging_product: "whatsapp", to, type: "text", text: { body: text }
-    }, { headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}` } });
+    const cleanTo = String(to).replace(/\D/g, "");
+    await axios.post(`https://graph.facebook.com/v22.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
+      messaging_product: "whatsapp", to: cleanTo, type: "text", text: { body: text }
+    }, { headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" } });
   } catch (err) { console.error("[WA SEND]", err.response?.data || err.message); }
 }
 
