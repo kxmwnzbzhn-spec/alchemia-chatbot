@@ -7,7 +7,6 @@
 require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
-
 const path = require("path");
 const { registerIncident, resolveIncident, getTodayIncidents, detectIncidentType, extractOrderNumber, readData } = require("./incidents");
 const { startScheduler, runDailyReport } = require("./scheduler");
@@ -242,7 +241,7 @@ app.post("/webhook", async (req, res) => {
 
 async function sendWhatsAppMessage(to, text) {
   try {
-    const cleanTo = String(to).replace(/\D/g, "");
+    const cleanTo = String(to).replace(/\D/g, "").replace(/^521(\d{10})$/, "52$1"); // fix MX 521->52
     await axios.post(`https://graph.facebook.com/v22.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
       messaging_product: "whatsapp", to: cleanTo, type: "text", text: { body: text }
     }, { headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" } });
