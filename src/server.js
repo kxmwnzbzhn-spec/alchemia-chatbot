@@ -94,7 +94,7 @@ async function getOrdersByPhone(phone) {
   try {
     // Normalizar: quitar +52 o 52 al inicio para obtener número local de 10 dígitos
     const localPhone = phone.replace(/^\+?52/, "").slice(-10);
-    const { data } = await woo.get("/orders", { params: { per_page: 5, orderby: "date", order: "desc" } });
+    const { data } = await woo.get("/orders", { params: { per_page: 50, orderby: "date", order: "desc" } });
     const matches = data.filter(o => {
       const bp = (o.billing.phone || "").replace(/\D/g, "").slice(-10);
       return bp === localPhone;
@@ -234,6 +234,10 @@ async function executeTool(name, input, session, phone) {
     if (!autoOrders || !autoOrders.length)
       return JSON.stringify({ resultado: "No encontré pedidos asociados a tu número de WhatsApp. ¿Tienes el número de pedido?" });
     if (autoOrders[0].customer_name && session) session.clientName = autoOrders[0].customer_name;
+    if (autoOrders.length === 1) {
+      const o = autoOrders[0];
+      return JSON.stringify({ pedido: { numero: o.number, estatus: statusMap[o.status] || o.status, productos: o.items, total: `${o.total} ${o.currency}`, fecha: o.date_created.slice(0, 10) } });
+    }
     const autoTop = autoOrders.slice(0, 3);
     const autoResumen = autoTop.map((o, i) => ({
       posicion: i + 1,
@@ -276,7 +280,7 @@ CAPACIDADES:
 
 REGLAS:
 - Si el cliente menciona un número de pedido, SIEMPRE usa consultar_pedido inmediatamente.
-- Si el cliente no tiene número de pedido pero quiere ver sus pedidos, usa consultar_pedido con su telefono_cliente (el número que aparece en el mensaje).
+- Si el cliente no tiene número de pedido pero quiere ver sus pedidos, llama a consultar_pedido SIN parámetros (ni numero_pedido ni telefono_cliente) — el sistema usará automáticamente el teléfono del remitente. NUNCA pidas el teléfono al cliente.
 - Si hay varios pedidos, muestra el resumen de los más recientes y pregunta de cuál quiere detalle.
 - Si hay problema grave (producto dañado, incorrecto, reembolso), responde: "He registrado tu caso para que nuestro equipo te contacte personalmente. 🌸"
 - Destaca el número de rastreo con *número*.
