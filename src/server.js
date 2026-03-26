@@ -113,7 +113,13 @@ async function getShipmentByOrderId(orderId) {
       ["_envia_tracking_number", "tracking_number", "_wc_shipment_tracking_number",
        "envia_tracking", "trackingNumber", "_envia_track_number", "envia_guia_tracking"].includes(m.key)
     );
-    const trackingNumber = trackingMeta?.value || null;
+    // Filtrar tracking falso (ej: ENV-4435-MEX generado como placeholder)
+    const rawTracking = trackingMeta?.value || null;
+    const isFakeTracking = rawTracking && /^ENV-\d+-MEX$/i.test(rawTracking);
+    const trackingNumber = isFakeTracking ? null : rawTracking;
+    if (isFakeTracking) {
+      console.log('[ENVIA] Tracking placeholder detectado y descartado:', rawTracking);
+    }
 
     let shipment = null;
     if (trackingNumber) {
