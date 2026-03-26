@@ -146,6 +146,30 @@ async function getShipmentByOrderId(orderId) {
 }
 
 
+// ── Tools para Claude ──
+const tools = [
+  {
+    name: "buscar_productos",
+    description: "Busca perfumes y productos en The Alchemia Lab. Úsalo cuando el cliente pregunta por fragancias, precios, stock, notas olfativas o características.",
+    input_schema: {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"]
+    }
+  },
+  {
+    name: "consultar_pedido",
+    description: "Consulta el estatus de pedido(s) y rastreo en Envía.com. Úsalo cuando el cliente menciona un número de pedido o pregunta por sus pedidos. Si no tiene número, usa telefono_cliente para buscar sus pedidos recientes.",
+    input_schema: {
+      type: "object",
+      properties: {
+        numero_pedido: { type: "string", description: "Número de pedido específico (ej: 1521)" },
+        telefono_cliente: { type: "string", description: "Teléfono del cliente para buscar sus pedidos si no tiene número de pedido" }
+      }
+    }
+  },
+];
+
 async function executeTool(name, input, session, phone) {
   if (name === "buscar_productos") {
     const productos = await searchProducts(input.query);
