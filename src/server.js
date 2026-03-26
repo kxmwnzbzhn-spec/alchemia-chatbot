@@ -447,6 +447,7 @@ app.post("/webhook", async (req, res) => {
       const phone = message.from;
       const text = message.text.body;
       console.log(`[MSG IN] ${phone}: ${text}`);
+        console.log(`[WA WEBHOOK IN] phone=${phone}`);
       res.sendStatus(200);
       const reply = await processMessage(phone, text);
       await sendWhatsAppMessage(phone, reply);
@@ -459,10 +460,23 @@ app.post("/webhook", async (req, res) => {
 async function sendWhatsAppMessage(to, text) {
   try {
     const cleanTo = String(to).replace(/\D/g, "").replace(/^521(\d{10})$/, "52$1"); // fix MX 521->52
-    await axios.post(`https://graph.facebook.com/v22.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
-      messaging_product: "whatsapp", to: cleanTo, type: "text", text: { body: text }
-    }, { headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" } });
-  } catch (err) { console.error("[WA SEND]", err.response?.data || err.message); }
+    const phoneId = process.env.WHATSAPP_PHONE_ID;
+    console.log(`[WA PHONE ID] ${phoneId} | to: ${cleanTo}`);
+    const response = await axios.post(`https://graph.facebook.com/v22.0/${phoneId}/messages`, {
+      messaging_product: "whatsapp",
+      to: cleanTo,
+      type: "text",
+      text: { body: text }
+    }, {
+      headers: {
+        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    });
+    console.log(`[WA SEND] OK | msgId: ${response.data?.messages?.[0]?.id}`);
+  } catch (err) {
+    console.error("[WA SEND]", err.response?.data || err.message);
+  }
 }
 
 // ── API Panel ──
