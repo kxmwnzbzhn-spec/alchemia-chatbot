@@ -67,19 +67,36 @@ async function searchProducts(query) {
   } catch (err) { console.error("[WOO]", err.message); return []; }
 }
 
+function formatOrder(o) {
+  return {
+    id: o.id, number: o.number, status: o.status, date_created: o.date_created,
+    customer_name: `${o.billing.first_name} ${o.billing.last_name}`,
+    customer_email: o.billing.email, customer_phone: o.billing.phone,
+    total: o.total, currency: o.currency,
+    items: o.line_items?.map(i => `${i.name} x${i.quantity}`).join(", "),
+    shipping_method: o.shipping_lines?.[0]?.method_title, meta_data: o.meta_data
+  };
+}
+
 async function getOrderByNumber(orderNumber) {
   try {
-    const { data } = await woo.get("/orders", { params: { number: orderNumber, per_page: 1 } });
+    const { data } = await woo.get("/orders", { params: { number: orderNumber, per_page: 5 } });
     if (!data.length) return null;
-    const o = data[0];
-    return {
-      id: o.id, number: o.number, status: o.status, date_created: o.date_created,
-      customer_name: `${o.billing.first_name} ${o.billing.last_name}`,
-      customer_email: o.billing.email, total: o.total, currency: o.currency,
-      items: o.line_items?.map(i => `${i.name} x${i.quantity}`).join(", "),
-      shipping_method: o.shipping_lines?.[0]?.method_title, meta_data: o.meta_data
-    };
+    return formatOrder(data[0]);
   } catch (err) { console.error("[WOO ORDER]", err.message); return null; }
+}
+
+async function getOrdersByPhone(phone) {
+  try {
+    // Normalizar: quitar +52 o 52 al inicio para obtener número local de 10 dígitos
+    const localPhone = phone.replace(/^\+?52/, "").slice(-10);
+    const { data } = await woo.get("/orders", { params: { per_page: 5, orderby: "date", order: "desc" } });
+    const matches = data.filter(o => {
+      const bp = (o.billing.phone || "").replace(/\D/g, "").slice(-10);
+      return bp === localPhone;
+    });
+    return matches.length ? matches.map(formatOrder) : null;
+  } catch (err) { console.error("[WOO PHONE]", err.message); return null; }
 }
 
 async function getShipmentByOrderId(orderId) {
@@ -112,8 +129,14 @@ const tools = [
   },
   {
     name: "consultar_pedido",
-    description: "Consulta el estatus de un pedido y su rastreo en Envía.com. Úsalo cuando el cliente menciona un número de pedido o problema de envío.",
-    input_schema: { type: "object", properties: { numero_pedido: { type: "string" } }, required: ["numero_pedido"] }
+    description: "Consulta el estatus de pedido(s) y rastreo en Envía.com. Úsalo cuando el cliente menciona un número de pedido o pregunta por sus pedidos. Si no tiene número, usa telefono_cliente para buscar sus pedidos recientes.",
+    input_schema: {
+      type: "object",
+      properties: {
+        numero_pedido: { type: "string", description: "Número de pedido específico (ej: 1521)" },
+        telefono_cliente: { type: "string", description: "Teléfono del cliente para buscar sus pedidos si no tiene número de pedido" }
+      }
+    }
   },
 ];
 
@@ -124,28 +147,50 @@ async function executeTool(name, input, session, phone) {
     return JSON.stringify({ productos });
   }
   if (name === "consultar_pedido") {
-    const { order, shipment, trackingNumber } = await getShipmentByOrderId(input.numero_pedido);
-    if (!order) return JSON.stringify({ resultado: `No encontré el pedido #${input.numero_pedido}. Verifica el número e intenta de nuevo.` });
     const statusMap = {
       pending: "Pendiente de pago", processing: "En proceso", "on-hold": "En espera",
       completed: "Completado", cancelled: "Cancelado", refunded: "Reembolsado", failed: "Fallido"
     };
-    if (order.customer_name && session) session.clientName = order.customer_name;
-    if (!trackingNumber && phone) registerIncident({ phone, orderNumber: input.numero_pedido, type: "SIN_RASTREO", detail: "Sin número de rastreo.", clientName: session?.clientName });
-    if (["cancelled", "on-hold", "failed"].includes(order.status) && phone) {
-      registerIncident({ phone, orderNumber: input.numero_pedido, type: "CANCELADO", detail: `Estatus: ${statusMap[order.status]}`, clientName: session?.clientName });
+
+    // CASO 1: buscar por número de pedido específico
+    if (input.numero_pedido) {
+      const { order, shipment, trackingNumber } = await getShipmentByOrderId(input.numero_pedido);
+      if (!order) return JSON.stringify({ resultado: `No encontré el pedido #${input.numero_pedido}. Verifica el número e intenta de nuevo.` });
+      if (order.customer_name && session) session.clientName = order.customer_name;
+      if (!trackingNumber && phone) registerIncident({ phone, orderNumber: input.numero_pedido, type: "SIN_RASTREO", detail: "Sin número de rastreo.", clientName: session?.clientName });
+      if (["cancelled", "on-hold", "failed"].includes(order.status) && phone) {
+        registerIncident({ phone, orderNumber: input.numero_pedido, type: "CANCELADO", detail: `Estatus: ${statusMap[order.status]}`, clientName: session?.clientName });
+      }
+      return JSON.stringify({
+        pedido: {
+          numero: order.number, estatus_woo: statusMap[order.status] || order.status,
+          cliente: order.customer_name, productos: order.items,
+          total: `${order.total} ${order.currency}`, metodo_envio: order.shipping_method, fecha: order.date_created
+        },
+        envio: trackingNumber ? {
+          numero_rastreo: trackingNumber,
+          datos_envia: shipment ? { estatus: shipment.status || shipment.data?.status, descripcion: shipment.description || shipment.data?.description, carrier: shipment.carrier || shipment.data?.carrier } : "Sin datos de Envía.com"
+        } : { numero_rastreo: null, nota: "Pedido en preparación — sin rastreo aún." }
+      });
     }
-    return JSON.stringify({
-      pedido: {
-        numero: order.number, estatus_woo: statusMap[order.status] || order.status,
-        cliente: order.customer_name, productos: order.items,
-        total: `${order.total} ${order.currency}`, metodo_envio: order.shipping_method, fecha: order.date_created
-      },
-      envio: trackingNumber ? {
-        numero_rastreo: trackingNumber,
-        datos_envia: shipment ? { estatus: shipment.status || shipment.data?.status, descripcion: shipment.description || shipment.data?.description, carrier: shipment.carrier || shipment.data?.carrier } : "Sin datos de Envía.com"
-      } : { numero_rastreo: null, nota: "Pedido en preparación — sin rastreo aún." }
-    });
+
+    // CASO 2: buscar por teléfono del cliente
+    if (input.telefono_cliente) {
+      const orders = await getOrdersByPhone(input.telefono_cliente);
+      if (!orders || !orders.length) return JSON.stringify({ resultado: `No encontré pedidos asociados al teléfono ${input.telefono_cliente}.` });
+      if (orders[0].customer_name && session) session.clientName = orders[0].customer_name;
+      const resumen = orders.map((o, i) => ({
+        posicion: i + 1,
+        numero: o.number,
+        estatus: statusMap[o.status] || o.status,
+        productos: o.items,
+        total: `${o.total} ${o.currency}`,
+        fecha: o.date_created.slice(0, 10)
+      }));
+      return JSON.stringify({ total_pedidos: orders.length, pedidos_recientes: resumen, nota: "Pregunta al cliente si quiere detalle de alguno." });
+    }
+
+    return JSON.stringify({ resultado: "Necesito un número de pedido o tu teléfono para buscar tus pedidos." });
   }
 }
 
@@ -173,6 +218,8 @@ CAPACIDADES:
 
 REGLAS:
 - Si el cliente menciona un número de pedido, SIEMPRE usa consultar_pedido inmediatamente.
+- Si el cliente no tiene número de pedido pero quiere ver sus pedidos, usa consultar_pedido con su telefono_cliente (el número que aparece en el mensaje).
+- Si hay varios pedidos, muestra el resumen de los más recientes y pregunta de cuál quiere detalle.
 - Si hay problema grave (producto dañado, incorrecto, reembolso), responde: "He registrado tu caso para que nuestro equipo te contacte personalmente. 🌸"
 - Destaca el número de rastreo con *número*.
 - Si no hay rastreo, explica que el pedido está en preparación artesanal.
