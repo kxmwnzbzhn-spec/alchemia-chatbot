@@ -80,9 +80,13 @@ function formatOrder(o) {
 
 async function getOrderByNumber(orderNumber) {
   try {
-    const { data } = await woo.get("/orders", { params: { number: orderNumber, per_page: 5 } });
-    if (!data.length) return null;
-    return formatOrder(data[0]);
+    const target = String(orderNumber).replace(/\D/g, "");
+    const { data } = await woo.get("/orders", {
+      params: { per_page: 20, orderby: "date", order: "desc" }
+    });
+    const match = data.find(o => String(o.number) === target || String(o.id) === target);
+    if (!match) return null;
+    return formatOrder(match);
   } catch (err) { console.error("[WOO ORDER]", err.message); return null; }
 }
 
@@ -191,7 +195,26 @@ async function executeTool(name, input, session, phone) {
       return JSON.stringify({ total_pedidos: orders.length, mostrando: topOrders.length, pedidos_recientes: resumen, pregunta: "¿Quieres ver el detalle de alguno?" });
     }
 
-    return JSON.stringify({ resultado: "Necesito un número de pedido o tu teléfono para buscar tus pedidos." });
+    // CASO 3: usar teléfono del remitente automáticamente
+    const autoOrders = await getOrdersByPhone(phone);
+    if (!autoOrders || !autoOrders.length)
+      return JSON.stringify({ resultado: "No encontré pedidos asociados a tu número de WhatsApp. ¿Tienes el número de pedido?" });
+    if (autoOrders[0].customer_name && session) session.clientName = autoOrders[0].customer_name;
+    const autoTop = autoOrders.slice(0, 3);
+    const autoResumen = autoTop.map((o, i) => ({
+      posicion: i + 1,
+      numero: o.number,
+      estatus: statusMap[o.status] || o.status,
+      productos: o.items,
+      total: `${o.total} ${o.currency}`,
+      fecha: o.date_created.slice(0, 10)
+    }));
+    return JSON.stringify({
+      total_pedidos: autoOrders.length,
+      mostrando: autoTop.length,
+      pedidos_recientes: autoResumen,
+      pregunta: "¿Quieres ver el detalle de alguno?"
+    });
   }
 }
 
