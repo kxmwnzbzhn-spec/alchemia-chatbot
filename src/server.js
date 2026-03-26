@@ -179,7 +179,8 @@ async function executeTool(name, input, session, phone) {
       const orders = await getOrdersByPhone(input.telefono_cliente);
       if (!orders || !orders.length) return JSON.stringify({ resultado: `No encontré pedidos asociados al teléfono ${input.telefono_cliente}.` });
       if (orders[0].customer_name && session) session.clientName = orders[0].customer_name;
-      const resumen = orders.map((o, i) => ({
+      const topOrders = orders.slice(0, 3);
+      const resumen = topOrders.map((o, i) => ({
         posicion: i + 1,
         numero: o.number,
         estatus: statusMap[o.status] || o.status,
@@ -187,7 +188,7 @@ async function executeTool(name, input, session, phone) {
         total: `${o.total} ${o.currency}`,
         fecha: o.date_created.slice(0, 10)
       }));
-      return JSON.stringify({ total_pedidos: orders.length, pedidos_recientes: resumen, nota: "Pregunta al cliente si quiere detalle de alguno." });
+      return JSON.stringify({ total_pedidos: orders.length, mostrando: topOrders.length, pedidos_recientes: resumen, pregunta: "¿Quieres ver el detalle de alguno?" });
     }
 
     return JSON.stringify({ resultado: "Necesito un número de pedido o tu teléfono para buscar tus pedidos." });
