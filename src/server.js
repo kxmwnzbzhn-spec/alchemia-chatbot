@@ -115,6 +115,7 @@ async function getShipmentByOrderId(orderId) {
     );
     // Filtrar tracking falso (ej: ENV-4435-MEX generado como placeholder)
     const rawTracking = trackingMeta?.value || null;
+    console.log('[ORDER TRACK META]', { orderId, trackingMeta: trackingMeta?.key, rawTracking });
     const isFakeTracking = rawTracking && /^ENV-\d+-MEX$/i.test(rawTracking);
     const trackingNumber = isFakeTracking ? null : rawTracking;
     if (isFakeTracking) {
