@@ -103,6 +103,71 @@ async function getOrdersByPhone(phone) {
   } catch (err) { console.error("[WOO PHONE]", err.message); return null; }
 }
 
+// ── Buscar tracking en Envia usando historial de envíos ──
+async function getTrackingFromEnvia(order) {
+  try {
+    // Envia API: GET /ship/ lista envíos recientes de la cuenta
+    const { data } = await axios.get(
+      'https://api.envia.com/ship/',
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.ENVIA_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        params: { limit: 50, status: 'delivered,transit,pending' }
+      }
+    );
+    const shipments = data?.data || data || [];
+    console.log('[ENVIA SHIPMENTS LIST] total:', shipments.length);
+
+    // Normalizar teléfono del pedido para comparar
+    const orderPhone = (order.customer_phone || '').replace(/\D/g, '').slice(-10);
+    const orderName = (order.customer_name || '').toLowerCase().trim();
+    const orderId = String(order.number || order.id);
+
+    // Intentar match por prioridad
+    let matched = null;
+
+    // 1. Match exacto por referencia/número de pedido
+    matched = shipments.find(s => {
+      const ref = String(s.reference || s.order_id || s.externalId || '');
+      return ref === orderId || ref.includes(orderId);
+    });
+    if (matched) console.log('[ENVIA MATCH] por referencia:', matched.trackingNumber || matched.tracking);
+
+    // 2. Si no, match por teléfono del destinatario
+    if (!matched && orderPhone) {
+      matched = shipments.find(s => {
+        const destPhone = (s.address_to?.phone || s.recipient?.phone || '').replace(/\D/g, '').slice(-10);
+        return destPhone === orderPhone;
+      });
+      if (matched) console.log('[ENVIA MATCH] por teléfono:', matched.trackingNumber || matched.tracking);
+    }
+
+    // 3. Si no, match por nombre del destinatario
+    if (!matched && orderName) {
+      matched = shipments.find(s => {
+        const destName = (s.address_to?.name || s.recipient?.name || '').toLowerCase().trim();
+        return destName && orderName && destName.includes(orderName.split(' ')[0]);
+      });
+      if (matched) console.log('[ENVIA MATCH] por nombre:', matched.trackingNumber || matched.tracking);
+    }
+
+    if (!matched) {
+      console.log('[ENVIA TRACK RESOLUTION] No se encontró envío para pedido', orderId);
+      return { trackingNumber: null, trackUrl: null };
+    }
+
+    const trackingNumber = matched.trackingNumber || matched.tracking || matched.guide_number || null;
+    const trackUrl = matched.trackUrl || matched.tracking_url || null;
+    console.log('[ENVIA TRACK RESOLUTION] Match encontrado:', { trackingNumber, trackUrl });
+    return { trackingNumber, trackUrl };
+  } catch (e) {
+    console.error('[ENVIA SHIPMENTS]', e.response?.status, e.response?.data || e.message);
+    return { trackingNumber: null, trackUrl: null };
+  }
+}
+
 async function getShipmentByOrderId(orderId) {
   try {
     const order = await getOrderByNumber(orderId);
@@ -143,6 +208,27 @@ async function getShipmentByOrderId(orderId) {
       }
     } else {
       console.log('[ENVIA] No tracking meta found for order', orderId, '| meta_data keys:', order.meta_data?.map(m => m.key));
+      // Intentar obtener tracking desde la API de Envia usando historial de envíos
+      const enviaResult = await getTrackingFromEnvia(order);
+      if (enviaResult.trackingNumber) {
+        try {
+          const { data } = await axios.post(
+            'https://api.envia.com/ship/generaltrack/',
+            { trackingNumbers: [String(enviaResult.trackingNumber)] },
+            {
+              headers: {
+                Authorization: `Bearer ${process.env.ENVIA_API_KEY}`,
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+          console.log('[ENVIA TRACK RESPONSE]', JSON.stringify(data).slice(0, 300));
+          shipment = data;
+        } catch (e) {
+          console.error('[ENVIA TRACK]', e.response?.data || e.message);
+        }
+        return { order, shipment, trackingNumber: enviaResult.trackingNumber };
+      }
     }
 
     return { order, shipment, trackingNumber };
