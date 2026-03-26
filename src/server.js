@@ -107,42 +107,44 @@ async function getShipmentByOrderId(orderId) {
   try {
     const order = await getOrderByNumber(orderId);
     if (!order) return { order: null, shipment: null, trackingNumber: null };
+
+    // Buscar el tracking en meta_data con múltiples posibles keys
     const trackingMeta = order.meta_data?.find(m =>
-      ["_envia_tracking_number", "tracking_number", "_wc_shipment_tracking_number"].includes(m.key)
+      ["_envia_tracking_number", "tracking_number", "_wc_shipment_tracking_number",
+       "envia_tracking", "trackingNumber", "_envia_track_number", "envia_guia_tracking"].includes(m.key)
     );
     const trackingNumber = trackingMeta?.value || null;
+
     let shipment = null;
     if (trackingNumber) {
       try {
-        const { data } = await axios.get(`https://api.envia.com/ship/tracking/${trackingNumber}`, {
-          headers: { Authorization: `Bearer ${process.env.ENVIA_API_KEY}` }
-        });
+        // Envia usa POST /ship/generaltrack/ con array trackingNumbers
+        const { data } = await axios.post(
+          'https://api.envia.com/ship/generaltrack/',
+          { trackingNumbers: [String(trackingNumber)] },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.ENVIA_API_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+        console.log('[ENVIA TRACK RESPONSE]', JSON.stringify(data).slice(0, 500));
         shipment = data;
-      } catch (e) { console.error("[ENVIA]", e.message); }
+      } catch (e) {
+        console.error('[ENVIA TRACK]', e.response?.data || e.message);
+      }
+    } else {
+      console.log('[ENVIA] No tracking meta found for order', orderId, '| meta_data keys:', order.meta_data?.map(m => m.key));
     }
+
     return { order, shipment, trackingNumber };
-  } catch (err) { return { order: null, shipment: null, trackingNumber: null }; }
+  } catch (err) {
+    console.error('[SHIPMENT]', err.message);
+    return { order: null, shipment: null, trackingNumber: null };
+  }
 }
 
-// ── Tools para Claude ──
-const tools = [
-  {
-    name: "buscar_productos",
-    description: "Busca perfumes y productos en The Alchemia Lab. Úsalo cuando el cliente pregunta por fragancias, precios, stock, notas olfativas o características.",
-    input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
-  },
-  {
-    name: "consultar_pedido",
-    description: "Consulta el estatus de pedido(s) y rastreo en Envía.com. Úsalo cuando el cliente menciona un número de pedido o pregunta por sus pedidos. Si no tiene número, usa telefono_cliente para buscar sus pedidos recientes.",
-    input_schema: {
-      type: "object",
-      properties: {
-        numero_pedido: { type: "string", description: "Número de pedido específico (ej: 1521)" },
-        telefono_cliente: { type: "string", description: "Teléfono del cliente para buscar sus pedidos si no tiene número de pedido" }
-      }
-    }
-  },
-];
 
 async function executeTool(name, input, session, phone) {
   if (name === "buscar_productos") {
@@ -173,7 +175,15 @@ async function executeTool(name, input, session, phone) {
         },
         envio: trackingNumber ? {
           numero_rastreo: trackingNumber,
-          datos_envia: shipment ? { estatus: shipment.status || shipment.data?.status, descripcion: shipment.description || shipment.data?.description, carrier: shipment.carrier || shipment.data?.carrier } : "Sin datos de Envía.com"
+          datos_envia: shipment ? (() => {
+              const t = shipment.data?.[0] || shipment;
+              return {
+                estatus: t.status || t.statusCode || "Sin estado",
+                descripcion: t.description || t.statusDescription || "Sin descripción",
+                carrier: t.carrier || t.service || "Sin carrier",
+                url_rastreo: t.trackUrl || t.url || null
+              };
+            })() : "Sin datos de Envía.com"
         } : { numero_rastreo: null, nota: "Pedido en preparación — sin rastreo aún." }
       });
     }
