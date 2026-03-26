@@ -227,7 +227,22 @@ REGLAS:
 - Usa *negritas* para información importante, emojis con moderación.
 - Respuestas cortas y directas — máximo 3-4 líneas por párrafo.
 - Si preguntan por perfumes, destaca las notas olfativas, la inspiración mexicana y la duración.
-- Cierra siempre con calidez: "¿En qué más te puedo ayudar? 🌿"`;
+- Cierra siempre con calidez: "¿En qué más te puedo ayudar? 🌿"
+REGLA CRÍTICA — MÚLTIPLES PEDIDOS:
+Cuando la herramienta consultar_pedido devuelva múltiples pedidos (array pedidos_recientes):
+- Mostrar TODOS los pedidos recibidos (no solo el primero)
+- Enumerarlos en formato lista
+- No resumir a un solo pedido
+- No seleccionar orders[0]
+- No usar solo el primer resultado
+
+Formato obligatorio cuando hay varios pedidos:
+Encontré X pedidos asociados a tu número:
+1. Pedido #ID — estado — total
+2. Pedido #ID — estado — total
+(continúa con todos los que vengan en el array)
+
+Si solo hay uno, entonces mostrar solo ese.`;
 
 async function processMessage(phone, userMessage) {
   const session = getSession(phone);
