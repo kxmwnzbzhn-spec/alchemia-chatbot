@@ -441,6 +441,7 @@ app.get("/webhook", (req, res) => {
 });
 
 app.post("/webhook", async (req, res) => {
+    res.sendStatus(200); // Responder inmediatamente a Meta (requerido < 5s)
   try {
     const message = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (message?.type === "text") {
@@ -448,13 +449,11 @@ app.post("/webhook", async (req, res) => {
       const text = message.text.body;
       console.log(`[MSG IN] ${phone}: ${text}`);
         console.log(`[WA WEBHOOK IN] phone=${phone}`);
-      res.sendStatus(200);
-      const reply = await processMessage(phone, text);
+            const reply = await processMessage(phone, text);
       await sendWhatsAppMessage(phone, reply);
       return;
     }
-    res.sendStatus(200);
-  } catch (err) { console.error("[WEBHOOK ERROR]", err); res.sendStatus(500); }
+  } catch (err) { console.error("[WEBHOOK ERROR]", err); }
 });
 
 async function sendWhatsAppMessage(to, text) {
