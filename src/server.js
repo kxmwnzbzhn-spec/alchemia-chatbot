@@ -555,7 +555,7 @@ app.get("/api/health", (req, res) => {
 
 startScheduler();
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n╔══════════════════════════════════════════╗`);
   console.log(`║  🌿 The Alchemia Lab — Chatbot WA v2.0   ║`);
   console.log(`║  Puerto: ${PORT}                              ║`);
