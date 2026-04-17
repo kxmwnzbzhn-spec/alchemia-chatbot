@@ -24,35 +24,81 @@ async function sendWhatsAppReport(incidents) {
   } catch (e) { console.error('[REPORT WA]', e.message); return false; }
 }
 
-async function sendEmailReport(incidents) {
+function buildEmailHTML(open) {
+  return `<h2>Reporte diario — The Alchemia Lab</h2>
+    <p>Total incidencias abiertas: <strong>${open.length}</strong></p>
+    <table border="1" cellpadding="8" style="border-collapse:collapse">
+      <tr><th>#Pedido</th><th>Tipo</th><th>Cliente</th><th>Teléfono</th></tr>
+      ${open.map(i => `<tr><td>${i.orderNumber}</td><td>${i.type}</td><td>${i.clientName}</td><td>${i.phone}</td></tr>`).join('')}
+    </table>`;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Envío vía Resend API (HTTPS — funciona en Railway)
+// ─────────────────────────────────────────────────────────────────
+async function sendEmailViaResend(open) {
+  const apiKey = process.env.RESEND_API_KEY;
+  const to = process.env.REPORT_EMAIL;
+  if (!apiKey || !to) return false;
+  const from = process.env.RESEND_FROM || 'onboarding@resend.dev';
+  try {
+    const resp = await axios.post('https://api.resend.com/emails', {
+      from,
+      to: [to],
+      subject: `📊 Reporte diario chatbot — ${new Date().toLocaleDateString('es-MX')}`,
+      html: buildEmailHTML(open),
+    }, {
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      timeout: 15000,
+    });
+    console.log('[REPORT EMAIL/Resend] OK | id:', resp.data?.id);
+    return true;
+  } catch (e) {
+    console.error('[REPORT EMAIL/Resend]', e.response?.status, e.response?.data || e.message);
+    return false;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Fallback vía SMTP (nodemailer) — para uso fuera de Railway
+// ─────────────────────────────────────────────────────────────────
+async function sendEmailViaSMTP(open) {
   if (!process.env.SMTP_HOST) return false;
   try {
-    // FIX v2.1: era createTransporter (typo) → el método correcto es createTransport
     const transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
       port: parseInt(process.env.SMTP_PORT || '587'),
       secure: String(process.env.SMTP_SECURE || 'false') === 'true',
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000,
     });
-    const open = incidents.filter(i => i.status === 'open');
-    if (!open.length) {
-      console.log('[REPORT EMAIL] 0 incidencias hoy — no se envía correo');
-      return true;
-    }
-    const html = `<h2>Reporte diario — The Alchemia Lab</h2>
-      <p>Total incidencias abiertas: <strong>${open.length}</strong></p>
-      <table border="1" cellpadding="8" style="border-collapse:collapse">
-        <tr><th>#Pedido</th><th>Tipo</th><th>Cliente</th><th>Teléfono</th></tr>
-        ${open.map(i => `<tr><td>${i.orderNumber}</td><td>${i.type}</td><td>${i.clientName}</td><td>${i.phone}</td></tr>`).join('')}
-      </table>`;
     await transporter.sendMail({
       from: process.env.SMTP_USER,
       to: process.env.REPORT_EMAIL || process.env.SMTP_USER,
       subject: `📊 Reporte diario chatbot — ${new Date().toLocaleDateString('es-MX')}`,
-      html
+      html: buildEmailHTML(open),
     });
+    console.log('[REPORT EMAIL/SMTP] OK');
     return true;
-  } catch (e) { console.error('[REPORT EMAIL]', e.message); return false; }
+  } catch (e) {
+    console.error('[REPORT EMAIL/SMTP]', e.message);
+    return false;
+  }
+}
+
+async function sendEmailReport(incidents) {
+  const open = incidents.filter(i => i.status === 'open');
+  if (!open.length) {
+    console.log('[REPORT EMAIL] 0 incidencias hoy — no se envía correo');
+    return true;
+  }
+  // Preferir Resend (HTTPS) si está configurado; si no, intentar SMTP.
+  if (process.env.RESEND_API_KEY) return await sendEmailViaResend(open);
+  if (process.env.SMTP_HOST) return await sendEmailViaSMTP(open);
+  console.log('[REPORT EMAIL] sin RESEND_API_KEY ni SMTP_HOST configurados');
+  return false;
 }
 
 async function runDailyReport() {
