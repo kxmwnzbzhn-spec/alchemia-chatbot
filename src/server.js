@@ -1,20 +1,23 @@
 /**
  * ═══════════════════════════════════════════════════════
  * CHATBOT WHATSAPP — The Alchemia Lab
- * v2.1 — Productos con link directo de compra + alternativas si agotado
+ * v2.2 — Productos con link directo + alternativas + FOLLOW-UPS para cerrar venta
  * ═══════════════════════════════════════════════════════
  *
- * Cambios v2.1 (Fase A + Fase B):
- * - searchProducts ahora devuelve image_url y stock real.
- * - Nueva tool obtener_detalle_producto (ficha completa por id/slug).
- * - Búsqueda fallback por categoría/tag cuando ?search= no devuelve nada.
- * - findAlternatives: si todos los matches están agotados, sugiere similares en stock.
- * - sendWhatsAppProductMessage: envío de imagen + caption + link.
- * - SYSTEM_PROMPT ahora exige incluir el permalink del Woo (link de compra) en cada respuesta.
- * - Productos agotados se muestran con etiqueta "AGOTADO" + sugerencia.
- * - Fix extractOrderNumber: requiere contexto (#, "pedido", "orden").
- * - Verificación HMAC opcional del webhook (X-Hub-Signature-256).
- * - /api/diagnostics reporta el modelo real.
+ * NOVEDAD v2.2 (Sales Recovery):
+ * - Follow-ups automáticos dentro de la ventana de 24h de WhatsApp.
+ * - 1er msj: 2h sin respuesta + cupón único 15% (un solo uso, vence 48h).
+ * - 2º msj: ~20h sin respuesta + última llamada con el mismo cupón.
+ * - Cupón generado dinámicamente en WooCommerce por cliente (ALMA-XXXXXXXX).
+ * - Cancela follow-up si:
+ *     · Cliente ya compró (cross-check con WooCommerce por teléfono)
+ *     · Cliente reportó queja (incidente abierto)
+ *     · Cliente respondió "no", "después", "ya no" (rechazo)
+ *     · Cliente respondió cualquier mensaje (reset del ciclo)
+ * - Solo manda follow-up si Alma ya mostró al menos 1 producto.
+ *
+ * Cambios v2.1 previos: SYSTEM_PROMPT con regla de link, obtener_detalle_producto,
+ * findAlternatives, fix nodemailer, fix extractOrderNumber, HMAC opcional, etc.
  */
 require("dotenv").config();
 const express = require("express");
@@ -29,6 +32,14 @@ const app = express();
 // ── Constantes ──
 const CLAUDE_MODEL = "claude-haiku-4-5";
 const WOO_PUBLIC_BASE = (process.env.WOO_URL || "https://thealchemialab.com").replace(/\/$/, "");
+
+// ── Config follow-ups ──
+const FOLLOWUP_DISCOUNT_PCT = parseInt(process.env.FOLLOWUP_DISCOUNT_PERCENT || "15", 10);
+const FOLLOWUP_FIRST_HOURS = parseFloat(process.env.FOLLOWUP_FIRST_HOURS || "2");
+const FOLLOWUP_SECOND_HOURS = parseFloat(process.env.FOLLOWUP_SECOND_HOURS || "20");
+const FOLLOWUP_COUPON_HOURS = parseInt(process.env.FOLLOWUP_COUPON_HOURS || "48", 10);
+const FOLLOWUP_CYCLE_MIN = parseInt(process.env.FOLLOWUP_CYCLE_MIN || "5", 10);
+const FOLLOWUP_ENABLED = String(process.env.FOLLOWUP_ENABLED || "true") === "true";
 
 // ── Llamada directa a Anthropic ──
 async function callClaude({ system, messages, tools, max_tokens = 1024 }) {
@@ -59,10 +70,16 @@ function getSession(phone) {
     sessions.set(phone, {
       history: [],
       lastActivity: Date.now(),
+      lastUserMessageAt: Date.now(),
       contactCount: 0,
       knownOrder: null,
       clientName: null,
-      lastShownProducts: [], // para "el primero", "más info del último"
+      lastShownProducts: [],     // para "el primero", "más info del último"
+      followupsSent: 0,          // contador de follow-ups en este ciclo
+      followupCancelled: false,  // si dijo no/después/etc, o ya compró, o tiene queja
+      hasIncident: false,        // marcado al detectar incidente
+      lastCouponCode: null,      // último cupón generado (para reusar en 2º msj)
+      lastCouponExpiresAt: null,
     });
   }
   const s = sessions.get(phone);
@@ -70,11 +87,11 @@ function getSession(phone) {
   return s;
 }
 setInterval(() => {
-  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  const cutoff = Date.now() - 26 * 60 * 60 * 1000; // limpiar sesiones más viejas de 26h (>ventana WA)
   for (const [p, s] of sessions.entries()) { if (s.lastActivity < cutoff) sessions.delete(p); }
 }, 15 * 60 * 1000);
 
-// ── WooCommerce (The Alchemia Lab) ──
+// ── WooCommerce ──
 const woo = axios.create({
   baseURL: `${WOO_PUBLIC_BASE}/wp-json/wc/v3`,
   auth: { username: process.env.WOO_KEY, password: process.env.WOO_SECRET },
@@ -87,66 +104,50 @@ const CACHE_TTL = 10 * 60 * 1000;
 
 function mapProduct(p) {
   return {
-    id: p.id,
-    slug: p.slug,
-    name: p.name,
-    price: p.price,
-    regular_price: p.regular_price,
-    sale_price: p.sale_price,
+    id: p.id, slug: p.slug, name: p.name,
+    price: p.price, regular_price: p.regular_price, sale_price: p.sale_price,
     on_sale: !!p.on_sale,
-    stock_status: p.stock_status,           // "instock" | "outofstock" | "onbackorder"
+    stock_status: p.stock_status,
     stock_quantity: p.stock_quantity,
     short_description: (p.short_description || "").replace(/<[^>]+>/g, "").trim(),
     description: (p.description || "").replace(/<[^>]+>/g, "").trim().slice(0, 600),
     categories: (p.categories || []).map(c => c.name),
     tags: (p.tags || []).map(t => t.name),
     image_url: p.images?.[0]?.src || null,
-    permalink: p.permalink,                 // ← LINK DE COMPRA
+    permalink: p.permalink,
   };
 }
 
-async function searchProducts(query, { includeOutOfStock = true, perPage = 5 } = {}) {
-  const cacheKey = `q:${query}:${includeOutOfStock}:${perPage}`;
+async function searchProducts(query, { perPage = 5 } = {}) {
+  const cacheKey = `q:${query}:${perPage}`;
   const cached = productCache.byTermAt.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL) return cached.data;
 
   let results = [];
   try {
-    // 1) Búsqueda literal
-    const { data } = await woo.get("/products", {
-      params: { search: query, per_page: perPage, status: "publish" }
-    });
+    const { data } = await woo.get("/products", { params: { search: query, per_page: perPage, status: "publish" } });
     results = data.map(mapProduct);
 
-    // 2) Fallback: si no hay nada, intentar buscar por TAG (notas olfativas, familias)
     if (!results.length) {
       const tagsResp = await woo.get("/products/tags", { params: { search: query, per_page: 5 } });
       if (tagsResp.data?.length) {
-        const tagIds = tagsResp.data.map(t => t.id).join(",");
-        const byTag = await woo.get("/products", {
-          params: { tag: tagIds, per_page: perPage, status: "publish" }
+        const { data: byTag } = await woo.get("/products", {
+          params: { tag: tagsResp.data.map(t => t.id).join(","), per_page: perPage, status: "publish" }
         });
-        results = byTag.data.map(mapProduct);
+        results = byTag.map(mapProduct);
       }
     }
-
-    // 3) Fallback: por CATEGORÍA
     if (!results.length) {
       const catResp = await woo.get("/products/categories", { params: { search: query, per_page: 5 } });
       if (catResp.data?.length) {
-        const catIds = catResp.data.map(c => c.id).join(",");
-        const byCat = await woo.get("/products", {
-          params: { category: catIds, per_page: perPage, status: "publish" }
+        const { data: byCat } = await woo.get("/products", {
+          params: { category: catResp.data.map(c => c.id).join(","), per_page: perPage, status: "publish" }
         });
-        results = byCat.data.map(mapProduct);
+        results = byCat.map(mapProduct);
       }
     }
-  } catch (err) {
-    console.error("[WOO SEARCH]", err.message);
-    return [];
-  }
+  } catch (err) { console.error("[WOO SEARCH]", err.message); return []; }
 
-  // Cachear
   results.forEach(p => {
     productCache.byId.set(p.id, { data: p, at: Date.now() });
     productCache.bySlug.set(p.slug, { data: p, at: Date.now() });
@@ -156,7 +157,6 @@ async function searchProducts(query, { includeOutOfStock = true, perPage = 5 } =
 }
 
 async function getProductByIdOrSlug(idOrSlug) {
-  // Cache hit
   const cKey = String(idOrSlug);
   const byIdHit = productCache.byId.get(Number(cKey));
   if (byIdHit && Date.now() - byIdHit.at < CACHE_TTL) return byIdHit.data;
@@ -177,13 +177,9 @@ async function getProductByIdOrSlug(idOrSlug) {
     productCache.byId.set(p.id, { data: p, at: Date.now() });
     productCache.bySlug.set(p.slug, { data: p, at: Date.now() });
     return p;
-  } catch (err) {
-    console.error("[WOO DETAIL]", err.message);
-    return null;
-  }
+  } catch (err) { console.error("[WOO DETAIL]", err.message); return null; }
 }
 
-// Si el producto está agotado, sugerir alternativas en stock por overlap de tags/categorías
 async function findAlternatives(product, max = 2) {
   if (!product) return [];
   try {
@@ -192,7 +188,6 @@ async function findAlternatives(product, max = 2) {
     const params = { per_page: 10, status: "publish", stock_status: "instock" };
     let pool = [];
 
-    // por tag
     if (tagNames.length) {
       const tagsResp = await woo.get("/products/tags", { params: { search: tagNames[0], per_page: 3 } });
       if (tagsResp.data?.length) {
@@ -200,7 +195,6 @@ async function findAlternatives(product, max = 2) {
         pool = pool.concat(data.map(mapProduct));
       }
     }
-    // por categoría
     if (!pool.length && cats.length) {
       const catResp = await woo.get("/products/categories", { params: { search: cats[0], per_page: 3 } });
       if (catResp.data?.length) {
@@ -209,18 +203,77 @@ async function findAlternatives(product, max = 2) {
       }
     }
 
-    // Excluir el mismo producto, dedupe, solo en stock
     const seen = new Set([product.id]);
     return pool
       .filter(p => p.stock_status === "instock" && !seen.has(p.id) && (seen.add(p.id), true))
       .slice(0, max);
+  } catch (err) { console.error("[ALT]", err.message); return []; }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// CUPONES dinámicos para follow-ups (1 uso, vence 48h)
+// ─────────────────────────────────────────────────────────────────
+function generateCouponCode(phone) {
+  const clean = String(phone).replace(/\D/g, "").slice(-4) || "0000";
+  const rand = crypto.randomBytes(3).toString("hex").toUpperCase();
+  return `ALMA-${clean}-${rand}`;
+}
+
+async function createSingleUseCoupon(phone, percent = FOLLOWUP_DISCOUNT_PCT, hoursValid = FOLLOWUP_COUPON_HOURS) {
+  const code = generateCouponCode(phone);
+  const expiresAt = new Date(Date.now() + hoursValid * 60 * 60 * 1000);
+  // formato YYYY-MM-DD para Woo
+  const dateExpires = expiresAt.toISOString().split("T")[0];
+  try {
+    const { data } = await woo.post("/coupons", {
+      code,
+      discount_type: "percent",
+      amount: String(percent),
+      individual_use: true,
+      usage_limit: 1,
+      usage_limit_per_user: 1,
+      date_expires: dateExpires,
+      description: `Follow-up automático Alma — cliente ${phone}`,
+      free_shipping: false,
+      exclude_sale_items: false,
+      minimum_amount: "0",
+    });
+    console.log(`[COUPON] Creado ${code} (${percent}% off, vence ${dateExpires}) para ${phone}`);
+    return { code: data.code, expiresAt: expiresAt.toISOString() };
   } catch (err) {
-    console.error("[ALT]", err.message);
-    return [];
+    console.error("[COUPON CREATE]", err.response?.data || err.message);
+    return null;
   }
 }
 
-// ── Pedidos & Envia ─────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// Cross-check: ¿Ya compró en las últimas 24h?
+// ─────────────────────────────────────────────────────────────────
+async function hasRecentOrder(phone, hoursWindow = 24) {
+  try {
+    const orders = await getOrdersByPhone(phone);
+    if (!orders || !orders.length) return false;
+    const cutoff = Date.now() - hoursWindow * 60 * 60 * 1000;
+    return orders.some(o => {
+      const t = new Date(o.date_created).getTime();
+      return t > cutoff && ["processing", "completed", "on-hold"].includes(o.status);
+    });
+  } catch { return false; }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Detección de RECHAZO en mensaje del cliente
+// ─────────────────────────────────────────────────────────────────
+function detectRejection(message) {
+  const m = message.toLowerCase().trim();
+  if (/^(no|nop|nope|nel|nelson|na|nah)\.?$/i.test(m)) return true;
+  if (/(no\s*me\s*interesa|no\s*gracias|ya\s*no|ahorita\s*no|despu[eé]s|otro\s*d[ií]a|m[aá]s\s*tarde|gracias\s*pero\s*no|paso|paso\s*por\s*ahora|ya\s*compr[eé])/i.test(m)) return true;
+  return false;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Pedidos & Envia (sin cambios)
+// ─────────────────────────────────────────────────────────────────
 function formatOrder(o) {
   return {
     id: o.id, number: o.number, status: o.status, date_created: o.date_created,
@@ -332,77 +385,54 @@ async function getShipmentByOrderId(orderId) {
   }
 }
 
-// ── Tools para Claude ──
+// ─────────────────────────────────────────────────────────────────
+// Tools para Claude
+// ─────────────────────────────────────────────────────────────────
 const tools = [
   {
     name: "buscar_productos",
     description: "Busca perfumes en The Alchemia Lab por nombre, notas olfativas, familia (amaderado, floral, oud, acuático, oriental, etc.) o categoría (mujer, hombre, unisex). Devuelve nombre, precio, disponibilidad, descripción corta, imagen y permalink (URL de compra). Si un perfume está agotado, devuelve también 'alternativas' en stock similares.",
-    input_schema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Texto libre: nombre del perfume o descripción olfativa." }
-      },
-      required: ["query"]
-    }
+    input_schema: { type: "object", properties: { query: { type: "string", description: "Texto libre: nombre del perfume o descripción olfativa." } }, required: ["query"] }
   },
   {
     name: "obtener_detalle_producto",
-    description: "Devuelve la ficha completa de un perfume específico (notas de salida/corazón/fondo, descripción larga, imagen, link de compra). Úsalo cuando el cliente pide más información de un producto que ya se mencionó, o dice 'el primero', 'el de hasta arriba', 'el Xibalba', etc. Acepta el id numérico o el slug del producto.",
-    input_schema: {
-      type: "object",
-      properties: {
-        id_o_slug: { type: "string", description: "ID numérico o slug del producto (ej: 4934 o 'cenote-azul-eau-de-parfum')." }
-      },
-      required: ["id_o_slug"]
-    }
+    description: "Devuelve la ficha completa de un perfume específico (notas, descripción larga, imagen, link de compra). Úsalo cuando el cliente pide más información de un producto que ya se mencionó, o dice 'el primero', 'el de hasta arriba', 'el Xibalba', etc.",
+    input_schema: { type: "object", properties: { id_o_slug: { type: "string", description: "ID numérico o slug." } }, required: ["id_o_slug"] }
   },
   {
     name: "consultar_pedido",
-    description: "Consulta el estatus de pedido(s) y rastreo en Envía.com. Úsalo cuando el cliente menciona un número de pedido o pregunta por sus pedidos.",
-    input_schema: {
-      type: "object",
-      properties: {
-        numero_pedido: { type: "string", description: "Número de pedido (ej: 1521)" },
-        telefono_cliente: { type: "string", description: "Teléfono para buscar pedidos si no hay número" }
-      }
-    }
+    description: "Consulta el estatus de pedido(s) y rastreo en Envía.com.",
+    input_schema: { type: "object", properties: {
+      numero_pedido: { type: "string", description: "Número de pedido (ej: 1521)" },
+      telefono_cliente: { type: "string", description: "Teléfono para buscar pedidos si no hay número" }
+    } }
   },
 ];
 
 async function executeTool(name, input, session, phone) {
   if (name === "buscar_productos") {
     const productos = await searchProducts(input.query);
-    if (!productos.length) {
-      return JSON.stringify({ resultado: "No encontré ese perfume. ¿Puedes describirlo diferente (notas, familia, ocasión)?" });
-    }
+    if (!productos.length) return JSON.stringify({ resultado: "No encontré ese perfume. ¿Puedes describirlo diferente (notas, familia, ocasión)?" });
+    if (session) session.lastShownProducts = productos.map(p => ({ id: p.id, slug: p.slug, name: p.name, link: p.permalink }));
 
-    // Recordar lo mostrado para "el primero", "más info del último"
-    if (session) session.lastShownProducts = productos.map(p => ({ id: p.id, slug: p.slug, name: p.name }));
-
-    // Adjuntar alternativas si hay agotados
     const enriched = await Promise.all(productos.map(async (p) => {
       const base = {
         id: p.id, name: p.name, slug: p.slug,
         precio: p.price ? `$${p.price} MXN` : null,
         precio_regular: p.regular_price ? `$${p.regular_price} MXN` : null,
         en_oferta: p.on_sale,
-        disponibilidad: p.stock_status === "instock"
-          ? "EN STOCK"
-          : (p.stock_status === "onbackorder" ? "POR PEDIDO" : "AGOTADO"),
+        disponibilidad: p.stock_status === "instock" ? "EN STOCK" : (p.stock_status === "onbackorder" ? "POR PEDIDO" : "AGOTADO"),
         descripcion: p.short_description,
         notas: p.tags,
         imagen: p.image_url,
-        link_compra: p.permalink,        // ← Permalink Woo
+        link_compra: p.permalink,
       };
       if (p.stock_status !== "instock") {
         const alts = await findAlternatives(p, 2);
-        base.alternativas_en_stock = alts.map(a => ({
-          name: a.name, precio: a.price ? `$${a.price} MXN` : null, link_compra: a.permalink
-        }));
+        base.alternativas_en_stock = alts.map(a => ({ name: a.name, precio: a.price ? `$${a.price} MXN` : null, link_compra: a.permalink }));
       }
       return base;
     }));
-
     return JSON.stringify({ productos: enriched });
   }
 
@@ -414,30 +444,21 @@ async function executeTool(name, input, session, phone) {
       precio: p.price ? `$${p.price} MXN` : null,
       precio_regular: p.regular_price ? `$${p.regular_price} MXN` : null,
       en_oferta: p.on_sale,
-      disponibilidad: p.stock_status === "instock"
-        ? "EN STOCK"
-        : (p.stock_status === "onbackorder" ? "POR PEDIDO" : "AGOTADO"),
+      disponibilidad: p.stock_status === "instock" ? "EN STOCK" : (p.stock_status === "onbackorder" ? "POR PEDIDO" : "AGOTADO"),
       descripcion_corta: p.short_description,
       descripcion: p.description,
-      notas: p.tags,
-      categorias: p.categories,
-      imagen: p.image_url,
-      link_compra: p.permalink,
+      notas: p.tags, categorias: p.categories,
+      imagen: p.image_url, link_compra: p.permalink,
     };
     if (p.stock_status !== "instock") {
       const alts = await findAlternatives(p, 2);
-      out.alternativas_en_stock = alts.map(a => ({
-        name: a.name, precio: a.price ? `$${a.price} MXN` : null, link_compra: a.permalink
-      }));
+      out.alternativas_en_stock = alts.map(a => ({ name: a.name, precio: a.price ? `$${a.price} MXN` : null, link_compra: a.permalink }));
     }
     return JSON.stringify({ producto: out });
   }
 
   if (name === "consultar_pedido") {
-    const statusMap = {
-      pending: "Pendiente de pago", processing: "En proceso", "on-hold": "En espera",
-      completed: "Completado", cancelled: "Cancelado", refunded: "Reembolsado", failed: "Fallido"
-    };
+    const statusMap = { pending: "Pendiente de pago", processing: "En proceso", "on-hold": "En espera", completed: "Completado", cancelled: "Cancelado", refunded: "Reembolsado", failed: "Fallido" };
 
     if (input.numero_pedido) {
       const { order, shipment, trackingNumber } = await getShipmentByOrderId(input.numero_pedido);
@@ -448,21 +469,12 @@ async function executeTool(name, input, session, phone) {
         registerIncident({ phone, orderNumber: input.numero_pedido, type: "CANCELADO", detail: `Estatus: ${statusMap[order.status]}`, clientName: session?.clientName });
       }
       return JSON.stringify({
-        pedido: {
-          numero: order.number, estatus_woo: statusMap[order.status] || order.status,
-          cliente: order.customer_name, productos: order.items,
-          total: `${order.total} ${order.currency}`, metodo_envio: order.shipping_method, fecha: order.date_created
-        },
+        pedido: { numero: order.number, estatus_woo: statusMap[order.status] || order.status, cliente: order.customer_name, productos: order.items, total: `${order.total} ${order.currency}`, metodo_envio: order.shipping_method, fecha: order.date_created },
         envio: trackingNumber ? {
           numero_rastreo: trackingNumber,
           datos_envia: shipment ? (() => {
             const t = shipment.data?.[0] || shipment;
-            return {
-              estatus: t.status || t.statusCode || "Sin estado",
-              descripcion: t.description || t.statusDescription || "Sin descripción",
-              carrier: t.carrier || t.service || "Sin carrier",
-              url_rastreo: t.trackUrl || t.url || null
-            };
+            return { estatus: t.status || t.statusCode || "Sin estado", descripcion: t.description || t.statusDescription || "Sin descripción", carrier: t.carrier || t.service || "Sin carrier", url_rastreo: t.trackUrl || t.url || null };
           })() : "Sin datos de Envía.com"
         } : { numero_rastreo: null, nota: "Pedido en preparación — sin rastreo aún." }
       });
@@ -473,35 +485,18 @@ async function executeTool(name, input, session, phone) {
       if (!orders || !orders.length) return JSON.stringify({ resultado: `No encontré pedidos asociados al teléfono ${input.telefono_cliente}.` });
       if (orders[0].customer_name && session) session.clientName = orders[0].customer_name;
       const topOrders = orders.slice(0, 3);
-      return JSON.stringify({
-        total_pedidos: orders.length,
-        mostrando: topOrders.length,
-        pedidos_recientes: topOrders.map((o, i) => ({
-          posicion: i + 1, numero: o.number, estatus: statusMap[o.status] || o.status,
-          productos: o.items, total: `${o.total} ${o.currency}`, fecha: o.date_created.slice(0, 10)
-        })),
-        pregunta: "¿Quieres ver el detalle de alguno?"
-      });
+      return JSON.stringify({ total_pedidos: orders.length, mostrando: topOrders.length, pedidos_recientes: topOrders.map((o, i) => ({ posicion: i + 1, numero: o.number, estatus: statusMap[o.status] || o.status, productos: o.items, total: `${o.total} ${o.currency}`, fecha: o.date_created.slice(0, 10) })), pregunta: "¿Quieres ver el detalle de alguno?" });
     }
 
     const autoOrders = await getOrdersByPhone(phone);
-    if (!autoOrders || !autoOrders.length)
-      return JSON.stringify({ resultado: "No encontré pedidos asociados a tu número de WhatsApp. ¿Tienes el número de pedido?" });
+    if (!autoOrders || !autoOrders.length) return JSON.stringify({ resultado: "No encontré pedidos asociados a tu número de WhatsApp. ¿Tienes el número de pedido?" });
     if (autoOrders[0].customer_name && session) session.clientName = autoOrders[0].customer_name;
     if (autoOrders.length === 1) {
       const o = autoOrders[0];
       return JSON.stringify({ pedido: { numero: o.number, estatus: statusMap[o.status] || o.status, productos: o.items, total: `${o.total} ${o.currency}`, fecha: o.date_created.slice(0, 10) } });
     }
     const autoTop = autoOrders.slice(0, 3);
-    return JSON.stringify({
-      total_pedidos: autoOrders.length,
-      mostrando: autoTop.length,
-      pedidos_recientes: autoTop.map((o, i) => ({
-        posicion: i + 1, numero: o.number, estatus: statusMap[o.status] || o.status,
-        productos: o.items, total: `${o.total} ${o.currency}`, fecha: o.date_created.slice(0, 10)
-      })),
-      pregunta: "¿Quieres ver el detalle de alguno?"
-    });
+    return JSON.stringify({ total_pedidos: autoOrders.length, mostrando: autoTop.length, pedidos_recientes: autoTop.map((o, i) => ({ posicion: i + 1, numero: o.number, estatus: statusMap[o.status] || o.status, productos: o.items, total: `${o.total} ${o.currency}`, fecha: o.date_created.slice(0, 10) })), pregunta: "¿Quieres ver el detalle de alguno?" });
   }
 }
 
@@ -514,6 +509,8 @@ async function detectAndRegisterIncident(phone, message, session) {
   }
   if (incidentType) {
     registerIncident({ phone, orderNumber: orderNumber || "PENDIENTE", type: incidentType, detail: message.slice(0, 200), clientName: session.clientName });
+    session.hasIncident = true;          // ← bloquea follow-ups
+    session.followupCancelled = true;
     return true;
   }
   return false;
@@ -525,7 +522,7 @@ Siempre respondes en español, de forma concisa y escaneable para WhatsApp.
 
 CAPACIDADES:
 1. Buscar perfumes (herramienta: buscar_productos)
-2. Ficha detallada de un perfume (herramienta: obtener_detalle_producto) — úsala cuando el cliente quiere más info, dice "el primero", "el Xibalba", etc.
+2. Ficha detallada de un perfume (herramienta: obtener_detalle_producto)
 3. Consultar pedidos y rastreo (herramienta: consultar_pedido)
 
 ═══════════════════════════════════════════════════
@@ -554,7 +551,6 @@ Formato recomendado para WhatsApp (UN producto):
 Formato cuando son VARIOS productos:
 1. *Nombre* — $XXX MXN — 1 línea — 🛒 link
 2. *Nombre* — $XXX MXN — 1 línea — 🛒 link
-(uno por línea, máximo 3-4)
 
 Cuando un producto está AGOTADO:
 "❌ *Xibalba Royal* está agotado por ahora.
@@ -568,11 +564,6 @@ REGLA — MÚLTIPLES PEDIDOS:
 Cuando consultar_pedido devuelva varios pedidos (array pedidos_recientes):
 - Mostrar TODOS, enumerados.
 - No resumir al primero.
-
-Formato:
-Encontré X pedidos asociados a tu número:
-1. Pedido #ID — estado — total
-2. Pedido #ID — estado — total
 
 ═══════════════════════════════════════════════════
 OTRAS REGLAS:
@@ -588,7 +579,23 @@ OTRAS REGLAS:
 
 async function processMessage(phone, userMessage) {
   const session = getSession(phone);
+
+  // 1) Marcar incidente si aplica (bloquea follow-ups internamente)
   await detectAndRegisterIncident(phone, userMessage, session);
+
+  // 2) Detectar rechazo explícito
+  if (detectRejection(userMessage)) {
+    session.followupCancelled = true;
+    console.log(`[FOLLOWUP] ${phone}: rechazo detectado, follow-ups cancelados`);
+  } else if (!session.hasIncident) {
+    // Cualquier otra respuesta activa resetea el contador (nuevo ciclo)
+    session.followupsSent = 0;
+    session.followupCancelled = false;
+    session.lastCouponCode = null;
+    session.lastCouponExpiresAt = null;
+  }
+  session.lastUserMessageAt = Date.now();
+
   const mentionedOrder = extractOrderNumber(userMessage);
   if (mentionedOrder) session.knownOrder = mentionedOrder;
   session.history.push({ role: "user", content: userMessage });
@@ -596,7 +603,7 @@ async function processMessage(phone, userMessage) {
 
   let messages = [...session.history];
   let finalResponse = "";
-  let lastProductImageMessage = null; // para mandar imagen separada si hay 1 solo
+  let lastProductImageMessage = null;
 
   for (let i = 0; i < 5; i++) {
     const response = await callClaude({ system: SYSTEM_PROMPT, tools, messages });
@@ -613,54 +620,136 @@ async function processMessage(phone, userMessage) {
           const result = await executeTool(block.name, block.input, session, phone);
           toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result });
 
-          // Si la tool devuelve UN solo producto, guardamos la imagen para mandarla aparte
           try {
             const parsed = JSON.parse(result);
-            const single =
-              (parsed.productos?.length === 1 && parsed.productos[0]) ||
-              parsed.producto || null;
+            const single = (parsed.productos?.length === 1 && parsed.productos[0]) || parsed.producto || null;
             if (single?.imagen && single?.link_compra) {
               lastProductImageMessage = { imageUrl: single.imagen, caption: `*${single.name}* — ${single.link_compra}` };
             }
-          } catch (_) { /* ignore */ }
+          } catch (_) {}
         }
       }
       messages.push({ role: "user", content: toolResults });
     }
   }
   if (finalResponse) session.history.push({ role: "assistant", content: finalResponse });
-  return {
-    text: finalResponse || "Lo siento, no pude procesar tu mensaje. Intenta de nuevo 🌿",
-    productImage: lastProductImageMessage
-  };
+  return { text: finalResponse || "Lo siento, no pude procesar tu mensaje. Intenta de nuevo 🌿", productImage: lastProductImageMessage };
 }
 
-// ── HMAC opcional del webhook (Meta firma con WHATSAPP_APP_SECRET) ──
+// ─────────────────────────────────────────────────────────────────
+// FOLLOW-UP CYCLE — corre cada N min, manda mensajes de venta
+// ─────────────────────────────────────────────────────────────────
+function buildFollowupMessage1({ session, coupon }) {
+  const product = session.lastShownProducts?.[0];
+  const productLine = product
+    ? `Vi que estabas viendo *${product.name}* 🌸\n${product.link || ""}\n`
+    : `Quería pasar a saludarte 🌸\n`;
+  return (
+    `Hola otra vez 🌿\n\n` +
+    `${productLine}\n` +
+    `Te dejo un detalle especial: te aparté un cupón único de *${FOLLOWUP_DISCOUNT_PCT}% de descuento* solo para ti — un solo uso, vence en ${FOLLOWUP_COUPON_HOURS} horas.\n\n` +
+    `🎁 Código: *${coupon.code}*\n\n` +
+    `Lo aplicas al pagar. ¿Te lo apartamos? 💛`
+  );
+}
+
+function buildFollowupMessage2({ session, coupon }) {
+  const product = session.lastShownProducts?.[0];
+  const productLine = product
+    ? `*${product.name}* sigue esperándote.\n${product.link || ""}\n\n`
+    : "";
+  return (
+    `Última llamada 🌸\n\n` +
+    `${productLine}` +
+    `Tu cupón *${coupon.code}* (${FOLLOWUP_DISCOUNT_PCT}% off) vence pronto y es de un solo uso. Después vuelve al precio normal.\n\n` +
+    `¿Te lo llevas hoy? 🌿`
+  );
+}
+
+async function followupCycle() {
+  if (!FOLLOWUP_ENABLED) return;
+  const now = Date.now();
+  for (const [phone, s] of sessions.entries()) {
+    try {
+      // Filtros base
+      if (s.followupCancelled || s.hasIncident) continue;
+      if (!s.lastShownProducts?.length) continue;          // no mostró productos → no hay venta que cerrar
+      if (s.followupsSent >= 2) continue;                  // máximo 2
+
+      const hoursSinceLast = (now - s.lastUserMessageAt) / (60 * 60 * 1000);
+
+      // Ventana de WhatsApp (24h). Margen 0.5h por si la API tarda.
+      if (hoursSinceLast > 23.5) {
+        s.followupCancelled = true; // ya no se puede mandar
+        continue;
+      }
+
+      let triggerOk = false;
+      if (s.followupsSent === 0 && hoursSinceLast >= FOLLOWUP_FIRST_HOURS) triggerOk = true;
+      if (s.followupsSent === 1 && hoursSinceLast >= FOLLOWUP_SECOND_HOURS) triggerOk = true;
+      if (!triggerOk) continue;
+
+      // Cross-check WooCommerce: ¿ya compró?
+      if (await hasRecentOrder(phone, 24)) {
+        console.log(`[FOLLOWUP] ${phone}: ya compró → cancelado`);
+        s.followupCancelled = true;
+        continue;
+      }
+
+      // Generar / reusar cupón
+      let coupon = s.lastCouponCode ? { code: s.lastCouponCode, expiresAt: s.lastCouponExpiresAt } : null;
+      if (!coupon) {
+        const created = await createSingleUseCoupon(phone);
+        if (!created) {
+          console.error(`[FOLLOWUP] ${phone}: no pude crear cupón, omito`);
+          continue;
+        }
+        coupon = created;
+        s.lastCouponCode = coupon.code;
+        s.lastCouponExpiresAt = coupon.expiresAt;
+      }
+
+      // Construir mensaje
+      const text = s.followupsSent === 0
+        ? buildFollowupMessage1({ session: s, coupon })
+        : buildFollowupMessage2({ session: s, coupon });
+
+      await sendWhatsAppMessage(phone, text);
+      s.followupsSent += 1;
+      console.log(`[FOLLOWUP] ${phone}: msg #${s.followupsSent} enviado (cupón ${coupon.code})`);
+    } catch (e) {
+      console.error(`[FOLLOWUP CYCLE] ${phone}:`, e.message);
+    }
+  }
+}
+setInterval(followupCycle, FOLLOWUP_CYCLE_MIN * 60 * 1000);
+console.log(`[FOLLOWUP] Habilitado=${FOLLOWUP_ENABLED} | 1er=${FOLLOWUP_FIRST_HOURS}h | 2º=${FOLLOWUP_SECOND_HOURS}h | cupón ${FOLLOWUP_DISCOUNT_PCT}% (vence ${FOLLOWUP_COUPON_HOURS}h) | ciclo cada ${FOLLOWUP_CYCLE_MIN}min`);
+
+// ─────────────────────────────────────────────────────────────────
+// HMAC opcional del webhook
+// ─────────────────────────────────────────────────────────────────
 function verifyMetaSignature(req) {
   const secret = process.env.WHATSAPP_APP_SECRET;
-  if (!secret) return true; // si no hay secreto configurado, no validamos
+  if (!secret) return true;
   const sigHeader = req.headers["x-hub-signature-256"];
   if (!sigHeader || !req.rawBody) return false;
   const expected = "sha256=" + crypto.createHmac("sha256", secret).update(req.rawBody).digest("hex");
-  try { return crypto.timingSafeEqual(Buffer.from(sigHeader), Buffer.from(expected)); }
-  catch { return false; }
+  try { return crypto.timingSafeEqual(Buffer.from(sigHeader), Buffer.from(expected)); } catch { return false; }
 }
 
-// ── Webhook WhatsApp ──
+// ─────────────────────────────────────────────────────────────────
+// Webhook WhatsApp
+// ─────────────────────────────────────────────────────────────────
 app.get("/webhook", (req, res) => {
-  if (req.query["hub.mode"] === "subscribe" &&
-      req.query["hub.verify_token"] === (process.env.WHATSAPP_VERIFY_TOKEN || "alchemia2024")) {
+  if (req.query["hub.mode"] === "subscribe" && req.query["hub.verify_token"] === (process.env.WHATSAPP_VERIFY_TOKEN || "alchemia2024")) {
     return res.status(200).send(req.query["hub.challenge"]);
   }
   res.sendStatus(403);
 });
 
 app.post("/webhook", async (req, res) => {
-  res.sendStatus(200); // Meta requiere < 5s
-  if (!verifyMetaSignature(req)) {
-    console.warn("[WEBHOOK] firma inválida — ignorado");
-    return;
-  }
+  res.sendStatus(200);
+  if (!verifyMetaSignature(req)) { console.warn("[WEBHOOK] firma inválida — ignorado"); return; }
   try {
     const message = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (message?.type === "text") {
@@ -669,9 +758,7 @@ app.post("/webhook", async (req, res) => {
       console.log(`[MSG IN] ${phone}: ${text}`);
       const reply = await processMessage(phone, text);
       await sendWhatsAppMessage(phone, reply.text);
-      if (reply.productImage) {
-        await sendWhatsAppImage(phone, reply.productImage.imageUrl, reply.productImage.caption);
-      }
+      if (reply.productImage) await sendWhatsAppImage(phone, reply.productImage.imageUrl, reply.productImage.caption);
       return;
     }
   } catch (err) { console.error("[WEBHOOK ERROR]", err); }
@@ -700,7 +787,9 @@ async function sendWhatsAppImage(to, imageUrl, caption) {
   } catch (err) { console.error("[WA IMG]", err.response?.data || err.message); }
 }
 
-// ── API Panel ──
+// ─────────────────────────────────────────────────────────────────
+// API Panel
+// ─────────────────────────────────────────────────────────────────
 app.post("/api/demo/chat", async (req, res) => {
   try {
     const { phone = "demo_user", message } = req.body;
@@ -711,6 +800,30 @@ app.post("/api/demo/chat", async (req, res) => {
     console.error("[DEMO CHAT ERROR]", err.message, err.status);
     res.status(500).json({ error: err.message, type: err.constructor.name });
   }
+});
+
+// Forzar el ciclo de follow-ups manualmente (debug)
+app.post("/api/followups/run", async (_req, res) => {
+  try { await followupCycle(); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Estado de follow-ups por sesión (debug)
+app.get("/api/followups/status", (_req, res) => {
+  const out = [];
+  for (const [phone, s] of sessions.entries()) {
+    out.push({
+      phone,
+      lastUserMessageAt: new Date(s.lastUserMessageAt).toISOString(),
+      hoursSinceLast: ((Date.now() - s.lastUserMessageAt) / (60 * 60 * 1000)).toFixed(2),
+      followupsSent: s.followupsSent,
+      followupCancelled: s.followupCancelled,
+      hasIncident: s.hasIncident,
+      hasProductsShown: (s.lastShownProducts?.length || 0) > 0,
+      lastCouponCode: s.lastCouponCode,
+    });
+  }
+  res.json({ sessions: out, total: out.length });
 });
 
 app.get("/api/diagnostics", async (req, res) => {
@@ -729,13 +842,17 @@ app.get("/api/diagnostics", async (req, res) => {
   results.key_has_spaces = key !== key.trim();
   results.model = CLAUDE_MODEL;
   results.woo_url = WOO_PUBLIC_BASE;
+  results.followups = {
+    enabled: FOLLOWUP_ENABLED,
+    firstHours: FOLLOWUP_FIRST_HOURS,
+    secondHours: FOLLOWUP_SECOND_HOURS,
+    discountPct: FOLLOWUP_DISCOUNT_PCT,
+    couponHours: FOLLOWUP_COUPON_HOURS
+  };
   res.json(results);
 });
 
-app.get("/api/incidents", (req, res) => {
-  const incidents = getTodayIncidents();
-  res.json({ incidents, total: incidents.length });
-});
+app.get("/api/incidents", (req, res) => res.json({ incidents: getTodayIncidents(), total: getTodayIncidents().length }));
 
 app.get("/api/incidents/all", (req, res) => {
   const data = readData();
@@ -745,10 +862,7 @@ app.get("/api/incidents/all", (req, res) => {
   res.json({ incidents, total: incidents.length, lastReport: data.lastReport });
 });
 
-app.patch("/api/incidents/:id/resolve", (req, res) => {
-  const ok = resolveIncident(req.params.id);
-  res.json({ ok });
-});
+app.patch("/api/incidents/:id/resolve", (req, res) => res.json({ ok: resolveIncident(req.params.id) }));
 
 app.post("/api/report/send", async (req, res) => {
   try {
@@ -771,7 +885,8 @@ app.get("/api/health", (req, res) => {
       claude: !!process.env.ANTHROPIC_API_KEY, woocommerce: !!process.env.WOO_KEY,
       envia: !!process.env.ENVIA_API_KEY, whatsapp: !!process.env.WHATSAPP_TOKEN,
       adminPhone: !!process.env.ADMIN_WHATSAPP_PHONE,
-      hmac: !!process.env.WHATSAPP_APP_SECRET
+      hmac: !!process.env.WHATSAPP_APP_SECRET,
+      followupsEnabled: FOLLOWUP_ENABLED
     }
   });
 });
@@ -780,8 +895,9 @@ startScheduler();
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`\n╔══════════════════════════════════════════╗`);
-  console.log(`║  🌿 The Alchemia Lab — Chatbot WA v2.1   ║`);
+  console.log(`║  🌿 The Alchemia Lab — Chatbot WA v2.2   ║`);
   console.log(`║  Puerto: ${PORT}                              ║`);
   console.log(`║  Modelo: ${CLAUDE_MODEL}              ║`);
+  console.log(`║  Follow-ups: ${FOLLOWUP_ENABLED ? "ON " : "OFF"} (${FOLLOWUP_DISCOUNT_PCT}% off, ${FOLLOWUP_COUPON_HOURS}h)         ║`);
   console.log(`╚══════════════════════════════════════════╝\n`);
 });
