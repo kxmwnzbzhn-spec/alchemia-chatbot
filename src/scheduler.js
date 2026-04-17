@@ -16,7 +16,7 @@ async function sendWhatsAppReport(incidents) {
         `${n + 1}. *#${i.orderNumber}* — ${i.type}\n   Cliente: ${i.clientName}\n   Tel: ${i.phone}`
       ).join('\n\n') +
       `\n\nPanel: ${process.env.PUBLIC_URL || 'https://tu-app.railway.app'}`;
-    await axios.post(`https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
+    await axios.post(`https://graph.facebook.com/v22.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
       messaging_product: 'whatsapp', to: process.env.ADMIN_WHATSAPP_PHONE,
       type: 'text', text: { body: text }
     }, { headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}` } });
@@ -27,8 +27,11 @@ async function sendWhatsAppReport(incidents) {
 async function sendEmailReport(incidents) {
   if (!process.env.SMTP_HOST) return false;
   try {
-    const transporter = nodemailer.createTransporter({
-      host: process.env.SMTP_HOST, port: parseInt(process.env.SMTP_PORT || '587'),
+    // FIX v2.1: era createTransporter (typo) → el método correcto es createTransport
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT || '587'),
+      secure: String(process.env.SMTP_SECURE || 'false') === 'true',
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
     });
     const open = incidents.filter(i => i.status === 'open');
@@ -39,7 +42,8 @@ async function sendEmailReport(incidents) {
         ${open.map(i => `<tr><td>${i.orderNumber}</td><td>${i.type}</td><td>${i.clientName}</td><td>${i.phone}</td></tr>`).join('')}
       </table>`;
     await transporter.sendMail({
-      from: process.env.SMTP_USER, to: process.env.REPORT_EMAIL || process.env.SMTP_USER,
+      from: process.env.SMTP_USER,
+      to: process.env.REPORT_EMAIL || process.env.SMTP_USER,
       subject: `📊 Reporte diario chatbot — ${new Date().toLocaleDateString('es-MX')}`,
       html
     });
@@ -51,12 +55,12 @@ async function runDailyReport() {
   const incidents = getTodayIncidents();
   const waOk = await sendWhatsAppReport(incidents);
   const emailOk = await sendEmailReport(incidents);
-  const data = require('./incidents').readData();
+  const data = readData();
   data.lastReport = new Date().toISOString();
-  const fs2 = require('fs');
-  const path2 = require('path');
-  const dataFile = path2.join(__dirname, '../data/incidents.json');
-  fs2.writeFileSync(dataFile, JSON.stringify(data, null, 2));
+  const dataFile = path.join(__dirname, '../data/incidents.json');
+  try {
+    fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
+  } catch (e) { console.error('[REPORT persist]', e.message); }
   console.log(`[REPORT] Enviado — WA: ${waOk}, Email: ${emailOk}, incidencias: ${incidents.length}`);
   return { incidents, waOk, emailOk };
 }

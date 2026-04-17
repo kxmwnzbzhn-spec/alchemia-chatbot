@@ -23,8 +23,10 @@ function writeData(data) {
 function registerIncident({ phone, orderNumber, type, detail, clientName }) {
   const data = readData();
   const existing = data.incidents.find(i => i.phone === phone && i.orderNumber === orderNumber && i.type === type && i.status === 'open');
-  if (existing) { existing.count = (existing.count || 1) + 1; existing.lastUpdate = new Date().toISOString(); }
-  else {
+  if (existing) {
+    existing.count = (existing.count || 1) + 1;
+    existing.lastUpdate = new Date().toISOString();
+  } else {
     data.incidents.push({
       id: Date.now().toString(),
       phone, orderNumber, type, detail,
@@ -61,9 +63,11 @@ function detectIncidentType(message) {
   return null;
 }
 
+// FIX v2.1: el regex anterior /#?(\d{3,6})/ capturaba años, precios "$499", "100ml".
+// Ahora exige contexto explícito: "#1234" o palabras "pedido/orden/orden #/orden número".
 function extractOrderNumber(message) {
-  const match = message.match(/#?(\d{3,6})/);
-  return match ? match[1] : null;
+  const m = message.match(/(?:#|pedido|orden|orden\s*n[uú]mero)\s*#?\s*(\d{3,6})/i);
+  return m ? m[1] : null;
 }
 
 module.exports = { registerIncident, resolveIncident, getTodayIncidents, detectIncidentType, extractOrderNumber, readData };
