@@ -35,6 +35,10 @@ async function sendEmailReport(incidents) {
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
     });
     const open = incidents.filter(i => i.status === 'open');
+    if (!open.length) {
+      console.log('[REPORT EMAIL] 0 incidencias hoy — no se envía correo');
+      return true;
+    }
     const html = `<h2>Reporte diario — The Alchemia Lab</h2>
       <p>Total incidencias abiertas: <strong>${open.length}</strong></p>
       <table border="1" cellpadding="8" style="border-collapse:collapse">
