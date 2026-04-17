@@ -808,6 +808,14 @@ app.post("/api/followups/run", async (_req, res) => {
   catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// Test directo: crear un cupón de prueba (verifica permisos de escritura en Woo)
+app.post("/api/followups/test-coupon", async (req, res) => {
+  const phone = req.body?.phone || "test_perms_check";
+  const result = await createSingleUseCoupon(phone, FOLLOWUP_DISCOUNT_PCT, 1); // 1h, mínimo
+  if (!result) return res.status(500).json({ ok: false, error: "No se pudo crear el cupón. Revisa permisos de WOO_KEY/WOO_SECRET en logs." });
+  res.json({ ok: true, ...result, note: "Cupón creado en WooCommerce. Vence en 1h. Verifica en Woo → Marketing → Coupons." });
+});
+
 // Estado de follow-ups por sesión (debug)
 app.get("/api/followups/status", (_req, res) => {
   const out = [];
