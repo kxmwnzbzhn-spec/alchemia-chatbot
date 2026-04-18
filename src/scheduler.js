@@ -126,4 +126,13 @@ function startScheduler() {
   console.log(`[SCHEDULER] Reporte programado para las ${reportTime} (CDMX)`);
 }
 
-module.exports = { startScheduler, runDailyReport };
+module.exports = {
+  startScheduler,
+  runDailyReport,
+  // Exports adicionales para pruebas — no cambian el comportamiento en runtime.
+  sendWhatsAppReport,
+  sendEmailReport,
+  sendEmailViaResend,
+  sendEmailViaSMTP,
+  buildEmailHTML,
+};
