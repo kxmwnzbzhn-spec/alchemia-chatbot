@@ -295,13 +295,21 @@ async function getOrderByNumber(orderNumber) {
   } catch (err) { console.error("[WOO ORDER]", err.message); return null; }
 }
 
+// FIX: normalizar a dígitos ANTES de tomar los últimos 10, para tolerar
+// formatos con espacios, paréntesis y guiones ("+52 (555) 123-4567").
+// También funciona con números internacionales — compara únicamente los
+// últimos 10 dígitos, lo que evita sesgo hacia el prefijo mexicano.
+function normalizePhoneLast10(phone) {
+  return String(phone || "").replace(/\D/g, "").slice(-10);
+}
+
 async function getOrdersByPhone(phone) {
   try {
-    const localPhone = phone.replace(/^\+?52/, "").slice(-10);
+    const localPhone = normalizePhoneLast10(phone);
     const { data } = await woo.get("/orders", { params: { per_page: 50, orderby: "date", order: "desc" } });
     const matches = data.filter(o => {
-      const bp = (o.billing.phone || "").replace(/\D/g, "").slice(-10);
-      return bp === localPhone;
+      const bp = normalizePhoneLast10(o.billing.phone);
+      return bp === localPhone && localPhone.length === 10;
     });
     return matches.length ? matches.map(formatOrder) : null;
   } catch (err) { console.error("[WOO PHONE]", err.message); return null; }
@@ -908,12 +916,18 @@ module.exports = {
   formatOrder,
   buildFollowupMessage1,
   buildFollowupMessage2,
+  normalizePhoneLast10,
   // Internals útiles para pruebas (sólo lectura / controlables)
   sessions,
   getSession,
   cleanupStaleSessions,
   followupCycle,
   processMessage,
+  searchProducts,
+  findAlternatives,
+  executeTool,
+  hasRecentOrder,
+  createSingleUseCoupon,
 };
 
 // Side effects sólo cuando se ejecuta directamente (node src/server.js),

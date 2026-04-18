@@ -37,6 +37,9 @@ describe('incidents.js — detectIncidentType', () => {
     ['no llego nada', 'NO_ENTREGADO'],
     ['El paquete no ha llegado', 'NO_ENTREGADO'],
     ['creo que se perdido el envío', 'NO_ENTREGADO'],
+    ['mi envío se perdió', 'NO_ENTREGADO'],
+    ['creo que se perdio mi pedido', 'NO_ENTREGADO'],
+    ['mis cosas se perdieron', 'NO_ENTREGADO'],
     ['Me mandaron un producto equivocado', 'PRODUCTO_INCORRECTO'],
     ['Es incorrecto lo que recibí', 'PRODUCTO_INCORRECTO'],
     ['Me llegó mal producto', 'PRODUCTO_INCORRECTO'],
@@ -104,8 +107,13 @@ describe('incidents.js — extractOrderNumber', () => {
     expect(extractOrderNumber('pedido 12')).toBeNull();         // 2 dígitos: falla
     expect(extractOrderNumber('pedido 123')).toBe('123');       // 3 dígitos: ok
     expect(extractOrderNumber('pedido 123456')).toBe('123456'); // 6 dígitos: ok
-    // con 7 dígitos solo captura los primeros 6 (regex \d{3,6} greedy)
-    expect(extractOrderNumber('pedido 1234567')).toBe('123456');
+  });
+
+  test('regresión: 7+ dígitos NO se truncan silenciosamente — devuelve null', () => {
+    // El regex ahora usa \b al final; un número de 7+ dígitos falla
+    // en lugar de devolver los primeros 6. Prefiere null a un match incorrecto.
+    expect(extractOrderNumber('pedido 1234567')).toBeNull();
+    expect(extractOrderNumber('#12345678')).toBeNull();
   });
 
   test('devuelve null cuando no hay contexto', () => {

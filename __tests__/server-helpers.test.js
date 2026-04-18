@@ -10,6 +10,7 @@ const {
   formatOrder,
   buildFollowupMessage1,
   buildFollowupMessage2,
+  normalizePhoneLast10,
 } = require('../src/server');
 
 describe('detectRejection', () => {
@@ -247,6 +248,38 @@ describe('formatOrder', () => {
     const f = formatOrder(order);
     expect(f.items).toBeUndefined();
     expect(f.shipping_method).toBeUndefined();
+  });
+});
+
+describe('normalizePhoneLast10 (fix de matching de pedidos por teléfono)', () => {
+  test('toma los últimos 10 dígitos de un número MX con prefijo 521', () => {
+    expect(normalizePhoneLast10('5215551234567')).toBe('5551234567');
+  });
+
+  test('toma los últimos 10 dígitos de un número MX con prefijo 52', () => {
+    expect(normalizePhoneLast10('525551234567')).toBe('5551234567');
+  });
+
+  test('regresión: tolera espacios, paréntesis y guiones', () => {
+    expect(normalizePhoneLast10('+52 (555) 123-4567')).toBe('5551234567');
+    expect(normalizePhoneLast10('+52 1 555 123 4567')).toBe('5551234567');
+  });
+
+  test('regresión: funciona con números no-MX (US)', () => {
+    // Previo: el strip de ^\+?52 no aplicaba y luego slice(-10) sobre string
+    // con espacios/guiones producía mezclas de chars. Ahora solo dígitos.
+    expect(normalizePhoneLast10('+1 (415) 555-1234')).toBe('4155551234');
+    expect(normalizePhoneLast10('14155551234')).toBe('4155551234');
+  });
+
+  test('devuelve string vacío para entrada vacía / nullish', () => {
+    expect(normalizePhoneLast10('')).toBe('');
+    expect(normalizePhoneLast10(null)).toBe('');
+    expect(normalizePhoneLast10(undefined)).toBe('');
+  });
+
+  test('coerce a string', () => {
+    expect(normalizePhoneLast10(5551234567)).toBe('5551234567');
   });
 });
 
