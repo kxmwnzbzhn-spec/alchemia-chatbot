@@ -33,6 +33,32 @@
     "collectCoverageFrom": [
       "src/**/*.js"
     ],
+    "coverageThreshold": {
+      "global": {
+        "statements": 40,
+        "branches": 30,
+        "functions": 50,
+        "lines": 40
+      },
+      "src/incidents.js": {
+        "statements": 100,
+        "branches": 95,
+        "functions": 100,
+        "lines": 100
+      },
+      "src/scheduler.js": {
+        "statements": 75,
+        "branches": 90,
+        "functions": 80,
+        "lines": 75
+      },
+      "src/server.js": {
+        "statements": 25,
+        "branches": 15,
+        "functions": 35,
+        "lines": 25
+      }
+    },
     "forceExit": true
   }
 }

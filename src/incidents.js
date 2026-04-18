@@ -56,7 +56,7 @@ function getTodayIncidents() {
 function detectIncidentType(message) {
   const m = message.toLowerCase();
   if (m.includes('dañ') || m.includes('roto') || m.includes('danad')) return 'PRODUCTO_DANADO';
-  if (m.includes('no llegó') || m.includes('no llego') || m.includes('no ha llegado') || m.includes('perdid')) return 'NO_ENTREGADO';
+  if (m.includes('no llegó') || m.includes('no llego') || m.includes('no ha llegado') || m.includes('perdid') || m.includes('perdió') || m.includes('perdio') || m.includes('perdier')) return 'NO_ENTREGADO';
   if (m.includes('equivocad') || m.includes('incorrecto') || m.includes('mal producto')) return 'PRODUCTO_INCORRECTO';
   if (m.includes('reembolso') || m.includes('devolucion') || m.includes('devolución')) return 'SOLICITUD_REEMBOLSO';
   if (m.includes('no funciona') || m.includes('defecto')) return 'DEFECTO';
@@ -65,8 +65,9 @@ function detectIncidentType(message) {
 
 // FIX v2.1: el regex anterior /#?(\d{3,6})/ capturaba años, precios "$499", "100ml".
 // Ahora exige contexto explícito: "#1234" o palabras "pedido/orden/orden #/orden número".
+// FIX: boundary \b al final evita que "pedido 1234567" se trunque a "123456".
 function extractOrderNumber(message) {
-  const m = message.match(/(?:#|pedido|orden|orden\s*n[uú]mero)\s*#?\s*(\d{3,6})/i);
+  const m = message.match(/(?:#|pedido|orden|orden\s*n[uú]mero)\s*#?\s*(\d{3,6})\b/i);
   return m ? m[1] : null;
 }
 
