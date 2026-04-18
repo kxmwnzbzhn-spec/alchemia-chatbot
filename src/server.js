@@ -353,18 +353,112 @@ async function getTrackingFromEnvia(order) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Extracción de tracking desde meta_data de WooCommerce
+// ─────────────────────────────────────────────────────────────────
+// Lista canónica de keys conocidas. Orden = prioridad.
+const TRACKING_META_KEYS = [
+  "_envia_tracking_number",
+  "_envia_track_number",
+  "envia_tracking",
+  "envia_guia_tracking",
+  "_wc_shipment_tracking_number",
+  "_wc_shipment_tracking_items",   // plugin WC Shipment Tracking — valor serializado
+  "_aftership_tracking_number",
+  "_tracking_number",
+  "_shipment_tracking_number",
+  "tracking_number",
+  "trackingNumber",
+  "tracking_code",
+];
+
+// Placeholders que NO son un tracking real.
+function isFakeTrackingValue(v) {
+  if (!v) return true;
+  const s = String(v).trim();
+  if (!s) return true;
+  if (/^ENV-\d+-MEX$/i.test(s)) return true;
+  return false;
+}
+
+// Un valor de meta puede ser: string plano, JSON string, array de objetos
+// (plugin WC Shipment Tracking), u objeto suelto. Devuelve el primer tracking
+// no-fake encontrado o null.
+function extractTrackingFromValue(value) {
+  if (value == null) return null;
+
+  // Caso simple: ya es string con el tracking.
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    // ¿Es JSON que hay que parsear?
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      try { return extractTrackingFromValue(JSON.parse(trimmed)); }
+      catch { /* no era JSON válido — tratar como string */ }
+    }
+    return isFakeTrackingValue(trimmed) ? null : trimmed;
+  }
+
+  // Array: WC Shipment Tracking guarda [{tracking_number, tracking_provider, ...}]
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const t = extractTrackingFromValue(item);
+      if (t) return t;
+    }
+    return null;
+  }
+
+  // Objeto suelto: buscar cualquier propiedad que huela a tracking.
+  if (typeof value === "object") {
+    const candidates = [
+      value.tracking_number, value.trackingNumber, value.tracking,
+      value.guide_number, value.number, value.code, value.tracking_code,
+    ];
+    for (const c of candidates) {
+      const t = extractTrackingFromValue(c);
+      if (t) return t;
+    }
+  }
+
+  return null;
+}
+
+// Busca el número de rastreo en el meta_data del pedido. Intenta primero las
+// keys canónicas en orden de prioridad; si no encuentra, hace un fallback
+// fuzzy sobre cualquier meta key que contenga "track".
+function findTrackingInMeta(metaData) {
+  if (!Array.isArray(metaData) || !metaData.length) return null;
+
+  for (const key of TRACKING_META_KEYS) {
+    const entry = metaData.find(m => m && m.key === key);
+    if (!entry) continue;
+    const t = extractTrackingFromValue(entry.value);
+    if (t) return t;
+  }
+
+  // Fallback fuzzy: cualquier key con "track" en el nombre.
+  const fuzzy = metaData.filter(m => m && typeof m.key === "string" && /track/i.test(m.key));
+  for (const entry of fuzzy) {
+    const t = extractTrackingFromValue(entry.value);
+    if (t) return t;
+  }
+
+  return null;
+}
+
 async function getShipmentByOrderId(orderId) {
   try {
     const order = await getOrderByNumber(orderId);
     if (!order) return { order: null, shipment: null, trackingNumber: null };
 
-    const trackingMeta = order.meta_data?.find(m => [
-      "_envia_tracking_number", "tracking_number", "_wc_shipment_tracking_number",
-      "envia_tracking", "trackingNumber", "_envia_track_number", "envia_guia_tracking"
-    ].includes(m.key));
-    const rawTracking = trackingMeta?.value || null;
-    const isFakeTracking = rawTracking && /^ENV-\d+-MEX$/i.test(rawTracking);
-    const trackingNumber = isFakeTracking ? null : rawTracking;
+    const trackingNumber = findTrackingInMeta(order.meta_data);
+
+    // Diagnóstico: si no encontramos tracking, volcamos las keys disponibles
+    // para poder agregar la que use este WooCommerce.
+    if (!trackingNumber && order.meta_data?.length) {
+      const keys = order.meta_data.map(m => m?.key).filter(Boolean);
+      console.log(`[TRACKING] Pedido ${orderId} sin tracking reconocido. Meta keys: ${keys.join(", ")}`);
+    }
 
     let shipment = null;
     if (trackingNumber) {
@@ -928,6 +1022,10 @@ module.exports = {
   executeTool,
   hasRecentOrder,
   createSingleUseCoupon,
+  findTrackingInMeta,
+  extractTrackingFromValue,
+  isFakeTrackingValue,
+  getShipmentByOrderId,
 };
 
 // Side effects sólo cuando se ejecuta directamente (node src/server.js),
