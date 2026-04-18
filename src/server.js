@@ -86,10 +86,10 @@ function getSession(phone) {
   s.lastActivity = Date.now();
   return s;
 }
-setInterval(() => {
+function cleanupStaleSessions() {
   const cutoff = Date.now() - 26 * 60 * 60 * 1000; // limpiar sesiones más viejas de 26h (>ventana WA)
   for (const [p, s] of sessions.entries()) { if (s.lastActivity < cutoff) sessions.delete(p); }
-}, 15 * 60 * 1000);
+}
 
 // ── WooCommerce ──
 const woo = axios.create({
@@ -722,8 +722,6 @@ async function followupCycle() {
     }
   }
 }
-setInterval(followupCycle, FOLLOWUP_CYCLE_MIN * 60 * 1000);
-console.log(`[FOLLOWUP] Habilitado=${FOLLOWUP_ENABLED} | 1er=${FOLLOWUP_FIRST_HOURS}h | 2º=${FOLLOWUP_SECOND_HOURS}h | cupón ${FOLLOWUP_DISCOUNT_PCT}% (vence ${FOLLOWUP_COUPON_HOURS}h) | ciclo cada ${FOLLOWUP_CYCLE_MIN}min`);
 
 // ─────────────────────────────────────────────────────────────────
 // HMAC opcional del webhook
@@ -899,13 +897,39 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-startScheduler();
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`\n╔══════════════════════════════════════════╗`);
-  console.log(`║  🌿 The Alchemia Lab — Chatbot WA v2.2   ║`);
-  console.log(`║  Puerto: ${PORT}                              ║`);
-  console.log(`║  Modelo: ${CLAUDE_MODEL}              ║`);
-  console.log(`║  Follow-ups: ${FOLLOWUP_ENABLED ? "ON " : "OFF"} (${FOLLOWUP_DISCOUNT_PCT}% off, ${FOLLOWUP_COUPON_HOURS}h)         ║`);
-  console.log(`╚══════════════════════════════════════════╝\n`);
-});
+// Exports para pruebas — no cambian el comportamiento en runtime.
+module.exports = {
+  app,
+  // Pure helpers
+  detectRejection,
+  generateCouponCode,
+  verifyMetaSignature,
+  mapProduct,
+  formatOrder,
+  buildFollowupMessage1,
+  buildFollowupMessage2,
+  // Internals útiles para pruebas (sólo lectura / controlables)
+  sessions,
+  getSession,
+  cleanupStaleSessions,
+  followupCycle,
+  processMessage,
+};
+
+// Side effects sólo cuando se ejecuta directamente (node src/server.js),
+// no al requerirse desde pruebas.
+if (require.main === module) {
+  setInterval(cleanupStaleSessions, 15 * 60 * 1000);
+  setInterval(followupCycle, FOLLOWUP_CYCLE_MIN * 60 * 1000);
+  console.log(`[FOLLOWUP] Habilitado=${FOLLOWUP_ENABLED} | 1er=${FOLLOWUP_FIRST_HOURS}h | 2º=${FOLLOWUP_SECOND_HOURS}h | cupón ${FOLLOWUP_DISCOUNT_PCT}% (vence ${FOLLOWUP_COUPON_HOURS}h) | ciclo cada ${FOLLOWUP_CYCLE_MIN}min`);
+  startScheduler();
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`\n╔══════════════════════════════════════════╗`);
+    console.log(`║  🌿 The Alchemia Lab — Chatbot WA v2.2   ║`);
+    console.log(`║  Puerto: ${PORT}                              ║`);
+    console.log(`║  Modelo: ${CLAUDE_MODEL}              ║`);
+    console.log(`║  Follow-ups: ${FOLLOWUP_ENABLED ? "ON " : "OFF"} (${FOLLOWUP_DISCOUNT_PCT}% off, ${FOLLOWUP_COUPON_HOURS}h)         ║`);
+    console.log(`╚══════════════════════════════════════════╝\n`);
+  });
+}
