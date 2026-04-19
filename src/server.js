@@ -381,6 +381,25 @@ function isFakeTrackingValue(v) {
   return false;
 }
 
+// Valida que un valor *parezca* un número de rastreo real.
+// Filtra falsos positivos de keys analíticas/pixel/sesión cuyo valor
+// suele ser una URL, un UUID largo, un JSON enorme, o tokens de cookies.
+function looksLikeTrackingNumber(s) {
+  if (typeof s !== "string") return false;
+  const t = s.trim();
+  if (!t) return false;
+  // Rango razonable de longitud para un número de guía real.
+  if (t.length < 6 || t.length > 40) return false;
+  // URLs, paths o HTML → no son tracking.
+  if (/^https?:\/\//i.test(t)) return false;
+  if (/[<>{}|\\^`"\s]/.test(t)) return false; // espacios u otros chars raros
+  // Debe tener al menos un dígito (las guías reales siempre tienen números).
+  if (!/\d/.test(t)) return false;
+  // Solo alfanumérico + separadores comunes en guías.
+  if (!/^[A-Za-z0-9._\-/]+$/.test(t)) return false;
+  return true;
+}
+
 // Un valor de meta puede ser: string plano, JSON string, array de objetos
 // (plugin WC Shipment Tracking), u objeto suelto. Devuelve el primer tracking
 // no-fake encontrado o null.
@@ -396,7 +415,9 @@ function extractTrackingFromValue(value) {
       try { return extractTrackingFromValue(JSON.parse(trimmed)); }
       catch { /* no era JSON válido — tratar como string */ }
     }
-    return isFakeTrackingValue(trimmed) ? null : trimmed;
+    if (isFakeTrackingValue(trimmed)) return null;
+    if (!looksLikeTrackingNumber(trimmed)) return null;
+    return trimmed;
   }
 
   // Array: WC Shipment Tracking guarda [{tracking_number, tracking_provider, ...}]
@@ -423,27 +444,45 @@ function extractTrackingFromValue(value) {
   return null;
 }
 
+// Regex para reconocer SOLO meta keys que son genuinamente de tracking.
+// Evita falsos positivos como _analytics_tracking_id, _fb_pixel_tracking,
+// _conversion_tracking, _utm_tracking_code, etc. — que contienen "track"
+// pero guardan IDs de sesión/pixel iguales para todos los pedidos.
+//
+// Requiere que la key combine "track/guia/shipment/envia" con
+// "number/num/code/id" y que NO sea de analytics/pixel/conversion.
+const FUZZY_TRACKING_KEY = /(track(ing)?|gu[ií]a|shipment|env[ií]a)[_-]?(number|num|code|id)\b/i;
+const FUZZY_BLOCKLIST    = /(analytic|pixel|conversion|utm|gtm|ga_|_ga|session|cookie|visitor|fbp|_fb_|clickid|gclid|fbclid)/i;
+
 // Busca el número de rastreo en el meta_data del pedido. Intenta primero las
 // keys canónicas en orden de prioridad; si no encuentra, hace un fallback
-// fuzzy sobre cualquier meta key que contenga "track".
+// fuzzy estricto sobre cualquier meta key que parezca genuina de tracking.
+// Devuelve { value, matchedKey, viaFuzzy }.
 function findTrackingInMeta(metaData) {
-  if (!Array.isArray(metaData) || !metaData.length) return null;
+  if (!Array.isArray(metaData) || !metaData.length) {
+    return { value: null, matchedKey: null, viaFuzzy: false };
+  }
 
   for (const key of TRACKING_META_KEYS) {
     const entry = metaData.find(m => m && m.key === key);
     if (!entry) continue;
     const t = extractTrackingFromValue(entry.value);
-    if (t) return t;
+    if (t) return { value: t, matchedKey: key, viaFuzzy: false };
   }
 
-  // Fallback fuzzy: cualquier key con "track" en el nombre.
-  const fuzzy = metaData.filter(m => m && typeof m.key === "string" && /track/i.test(m.key));
+  // Fallback fuzzy (restringido): key debe combinar término de tracking
+  // con número/código/id, y NO ser de analytics/pixel/sesión.
+  const fuzzy = metaData.filter(m => {
+    if (!m || typeof m.key !== "string") return false;
+    if (FUZZY_BLOCKLIST.test(m.key)) return false;
+    return FUZZY_TRACKING_KEY.test(m.key);
+  });
   for (const entry of fuzzy) {
     const t = extractTrackingFromValue(entry.value);
-    if (t) return t;
+    if (t) return { value: t, matchedKey: entry.key, viaFuzzy: true };
   }
 
-  return null;
+  return { value: null, matchedKey: null, viaFuzzy: false };
 }
 
 async function getShipmentByOrderId(orderId) {
@@ -451,11 +490,15 @@ async function getShipmentByOrderId(orderId) {
     const order = await getOrderByNumber(orderId);
     if (!order) return { order: null, shipment: null, trackingNumber: null };
 
-    const trackingNumber = findTrackingInMeta(order.meta_data);
+    const match = findTrackingInMeta(order.meta_data);
+    const trackingNumber = match.value;
 
-    // Diagnóstico: si no encontramos tracking, volcamos las keys disponibles
-    // para poder agregar la que use este WooCommerce.
-    if (!trackingNumber && order.meta_data?.length) {
+    // Log diagnóstico con suficiente info para detectar mismatches:
+    // - Si matcheó una key fuzzy, la vemos explícitamente (posible falso positivo).
+    // - Si no matcheó nada, mostramos todas las keys para añadir la correcta.
+    if (trackingNumber && match.viaFuzzy) {
+      console.log(`[TRACKING] Pedido ${orderId} match FUZZY key="${match.matchedKey}" value="${trackingNumber}"`);
+    } else if (!trackingNumber && order.meta_data?.length) {
       const keys = order.meta_data.map(m => m?.key).filter(Boolean);
       console.log(`[TRACKING] Pedido ${orderId} sin tracking reconocido. Meta keys: ${keys.join(", ")}`);
     }
