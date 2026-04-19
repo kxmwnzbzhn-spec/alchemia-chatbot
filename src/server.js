@@ -1027,6 +1027,60 @@ app.delete("/api/demo/session/:phone", (req, res) => {
   res.json({ ok: true });
 });
 
+// Diagnóstico: inspecciona la estructura completa de un pedido en WooCommerce
+// para identificar la key exacta donde el store guarda el tracking.
+// Uso: GET /api/debug/order/4435  →  JSON con meta_data + intento de match.
+app.get("/api/debug/order/:id", async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    let orderRaw = null;
+
+    // Intento 1: lookup directo por ID (más robusto que listar los 20 últimos).
+    try {
+      const { data } = await woo.get(`/orders/${orderId}`);
+      orderRaw = data;
+    } catch { /* cae al segundo intento */ }
+
+    // Intento 2: lista de los últimos 20 (comportamiento actual de getOrderByNumber).
+    if (!orderRaw) {
+      try {
+        const { data } = await woo.get("/orders", { params: { per_page: 20, orderby: "date", order: "desc" } });
+        orderRaw = data.find(o => String(o.number) === String(orderId) || String(o.id) === String(orderId));
+      } catch { /* nothing */ }
+    }
+
+    if (!orderRaw) {
+      return res.status(404).json({ error: `Pedido ${orderId} no encontrado en WooCommerce` });
+    }
+
+    // Intento 3: ¿el plugin WC Shipment Tracking tiene su propio endpoint?
+    let shipmentTrackingApi = null;
+    try {
+      const { data } = await woo.get(`/orders/${orderRaw.id}/shipment-trackings`);
+      shipmentTrackingApi = data;
+    } catch (e) {
+      shipmentTrackingApi = { error: e.response?.status || e.message };
+    }
+
+    const match = findTrackingInMeta(orderRaw.meta_data);
+
+    res.json({
+      orderId: orderRaw.id,
+      orderNumber: orderRaw.number,
+      status: orderRaw.status,
+      meta_data: orderRaw.meta_data, // clave para diagnosticar
+      tracking_match: {
+        found: match.value,
+        matchedKey: match.matchedKey,
+        viaFuzzy: match.viaFuzzy,
+      },
+      shipment_tracking_plugin_api: shipmentTrackingApi,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, detail: err.response?.data });
+  }
+});
+
 app.get("/api/health", (req, res) => {
   const data = readData();
   res.json({
