@@ -315,38 +315,104 @@ async function getOrdersByPhone(phone) {
   } catch (err) { console.error("[WOO PHONE]", err.message); return null; }
 }
 
+function extractTrackingFromShipment(s) {
+  return {
+    trackingNumber: s.trackingNumber || s.tracking || s.guide_number || s.tracking_number || null,
+    trackUrl: s.trackUrl || s.tracking_url || s.trackingUrl || null,
+  };
+}
+
 async function getTrackingFromEnvia(order) {
+  if (!process.env.ENVIA_API_KEY) {
+    console.log("[ENVIA] ENVIA_API_KEY no configurada, skip");
+    return { trackingNumber: null, trackUrl: null };
+  }
+  const orderId = String(order.number || order.id);
+  const orderPhone = normalizePhoneLast10(order.customer_phone);
+  const orderName = (order.customer_name || "").toLowerCase().trim();
+  const headers = { Authorization: `Bearer ${process.env.ENVIA_API_KEY}`, "Content-Type": "application/json" };
+
+  // Intento 1: búsqueda directa por referencia. Envia.com documenta varios
+  // nombres de parámetro según el endpoint — probamos los 3 más comunes.
+  for (const paramName of ["reference", "order_id", "externalId"]) {
+    try {
+      const { data } = await axios.get("https://api.envia.com/ship/", {
+        headers,
+        params: { [paramName]: orderId, limit: 10 },
+        timeout: 10000,
+      });
+      const shipments = data?.data || data?.shipments || data || [];
+      const matched = Array.isArray(shipments) && shipments.find(s => {
+        const ref = String(s.reference || s.order_id || s.externalId || "");
+        return ref === orderId;
+      });
+      if (matched) {
+        console.log(`[ENVIA] Match directo pedido=${orderId} vía param=${paramName}`);
+        return extractTrackingFromShipment(matched);
+      }
+    } catch (_) { /* siguiente intento */ }
+  }
+
+  // Intento 2: listar hasta 200 envíos sin filtro de status (el anterior era
+  // demasiado restrictivo — limit:50 + status:"delivered,transit,pending"
+  // filtraba envíos en otros estados y no alcanzaba para tiendas con muchos
+  // pedidos) y matchear localmente.
   try {
     const { data } = await axios.get("https://api.envia.com/ship/", {
-      headers: { Authorization: `Bearer ${process.env.ENVIA_API_KEY}`, "Content-Type": "application/json" },
-      params: { limit: 50, status: "delivered,transit,pending" }
+      headers,
+      params: { limit: 200 },
+      timeout: 15000,
     });
-    const shipments = data?.data || data || [];
-    const orderPhone = (order.customer_phone || "").replace(/\D/g, "").slice(-10);
-    const orderName = (order.customer_name || "").toLowerCase().trim();
-    const orderId = String(order.number || order.id);
+    const shipments = data?.data || data?.shipments || data || [];
+    if (!Array.isArray(shipments)) {
+      console.log(`[ENVIA] Respuesta inesperada tipo=${typeof shipments}`);
+      return { trackingNumber: null, trackUrl: null };
+    }
+    console.log(`[ENVIA] ${shipments.length} shipments traídos; busco pedido=${orderId} phone=${orderPhone || "-"}`);
 
+    // Match exacto por referencia (sin substring — evita matchear "4435" dentro de "44351").
     let matched = shipments.find(s => {
       const ref = String(s.reference || s.order_id || s.externalId || "");
-      return ref === orderId || ref.includes(orderId);
+      return ref === orderId;
     });
-    if (!matched && orderPhone) {
-      matched = shipments.find(s => {
-        const dp = (s.address_to?.phone || s.recipient?.phone || "").replace(/\D/g, "").slice(-10);
-        return dp === orderPhone;
+
+    // Match por teléfono — sólo si tenemos 10 dígitos completos y hay un único
+    // shipment con ese teléfono (si hay varios, no podemos saber cuál es).
+    if (!matched && orderPhone.length === 10) {
+      const byPhone = shipments.filter(s => {
+        const dp = normalizePhoneLast10(s.address_to?.phone || s.recipient?.phone);
+        return dp.length === 10 && dp === orderPhone;
       });
+      if (byPhone.length === 1) {
+        matched = byPhone[0];
+        console.log(`[ENVIA] Match único por teléfono=${orderPhone}`);
+      } else if (byPhone.length > 1) {
+        console.log(`[ENVIA] ${byPhone.length} shipments con phone=${orderPhone} — ambiguo, descarto`);
+      }
     }
+
+    // Match por nombre — solo como último recurso, exigiendo coincidencia única.
     if (!matched && orderName) {
-      matched = shipments.find(s => {
-        const dn = (s.address_to?.name || s.recipient?.name || "").toLowerCase().trim();
-        return dn && dn.includes(orderName.split(" ")[0]);
-      });
+      const firstName = orderName.split(" ")[0];
+      if (firstName.length >= 3) {
+        const byName = shipments.filter(s => {
+          const dn = (s.address_to?.name || s.recipient?.name || "").toLowerCase().trim();
+          return dn && dn.includes(firstName);
+        });
+        if (byName.length === 1) {
+          matched = byName[0];
+          console.log(`[ENVIA] Match único por nombre=${firstName}`);
+        } else if (byName.length > 1) {
+          console.log(`[ENVIA] ${byName.length} shipments con name~${firstName} — ambiguo, descarto`);
+        }
+      }
     }
-    if (!matched) return { trackingNumber: null, trackUrl: null };
-    return {
-      trackingNumber: matched.trackingNumber || matched.tracking || matched.guide_number || null,
-      trackUrl: matched.trackUrl || matched.tracking_url || null,
-    };
+
+    if (!matched) {
+      console.log(`[ENVIA] Sin match para pedido=${orderId}`);
+      return { trackingNumber: null, trackUrl: null };
+    }
+    return extractTrackingFromShipment(matched);
   } catch (e) {
     console.error("[ENVIA SHIPMENTS]", e.response?.status, e.response?.data || e.message);
     return { trackingNumber: null, trackUrl: null };
@@ -621,7 +687,21 @@ async function executeTool(name, input, session, phone) {
             const t = shipment.data?.[0] || shipment;
             return { estatus: t.status || t.statusCode || "Sin estado", descripcion: t.description || t.statusDescription || "Sin descripción", carrier: t.carrier || t.service || "Sin carrier", url_rastreo: t.trackUrl || t.url || null };
           })() : "Sin datos de Envía.com"
-        } : { numero_rastreo: null, nota: "Pedido en preparación — sin rastreo aún." }
+        } : (
+          // Cuando no hay tracking, el mensaje depende del estatus.
+          // Decir "en preparación" cuando el pedido YA está completed/shipped
+          // es confuso para el cliente (fue el bug que reportamos con #4435).
+          ["completed"].includes(order.status) ? {
+            numero_rastreo: null,
+            nota: "Este pedido aparece como entregado en el sistema, pero no encuentro el número de rastreo registrado. Si no lo recibiste, escalamos tu caso con el equipo."
+          } : ["processing"].includes(order.status) ? {
+            numero_rastreo: null,
+            nota: "Tu pedido está en proceso de preparación. Cuando salga del almacén recibirás el número de rastreo por correo."
+          } : {
+            numero_rastreo: null,
+            nota: `Estatus: ${statusMap[order.status] || order.status}. Sin número de rastreo registrado.`
+          }
+        )
       });
     }
 
@@ -1078,6 +1158,58 @@ app.get("/api/debug/order/:id", async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err.message, detail: err.response?.data });
+  }
+});
+
+// Diagnóstico de Envia: ejecuta la búsqueda real y devuelve qué matcheó,
+// por qué camino, y qué traía el listado. Pensado para depurar pedidos
+// donde el tracking sólo vive en Envia y no en WooCommerce.
+app.get("/api/debug/envia/:orderId", async (req, res) => {
+  try {
+    const order = await getOrderByNumber(req.params.orderId);
+    if (!order) return res.status(404).json({ error: `Pedido ${req.params.orderId} no encontrado en WooCommerce` });
+
+    if (!process.env.ENVIA_API_KEY) return res.status(400).json({ error: "ENVIA_API_KEY no configurada" });
+
+    // Traer listado para inspección manual (primeros 20 para no saturar).
+    let sample = [];
+    try {
+      const { data } = await axios.get("https://api.envia.com/ship/", {
+        headers: { Authorization: `Bearer ${process.env.ENVIA_API_KEY}` },
+        params: { limit: 200 },
+        timeout: 15000,
+      });
+      const shipments = data?.data || data?.shipments || data || [];
+      sample = Array.isArray(shipments) ? shipments.slice(0, 20).map(s => ({
+        reference: s.reference,
+        order_id: s.order_id,
+        externalId: s.externalId,
+        trackingNumber: s.trackingNumber || s.tracking || s.guide_number,
+        trackUrl: s.trackUrl || s.tracking_url,
+        status: s.status || s.statusCode,
+        recipient_name: s.address_to?.name || s.recipient?.name,
+        recipient_phone: s.address_to?.phone || s.recipient?.phone,
+      })) : [];
+    } catch (e) {
+      return res.status(502).json({ error: "Envia API falló", detail: e.response?.data || e.message });
+    }
+
+    const result = await getTrackingFromEnvia(order);
+
+    res.json({
+      order: {
+        id: order.id,
+        number: order.number,
+        status: order.status,
+        customer_name: order.customer_name,
+        customer_phone: order.customer_phone,
+      },
+      match: result,
+      envia_sample_shipments: sample,
+      note: "Si 'match' es null, revisa 'envia_sample_shipments': busca uno con reference/order_id igual a " + order.number,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
