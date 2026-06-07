@@ -30,7 +30,7 @@ const { startScheduler, runDailyReport } = require("./scheduler");
 const app = express();
 
 // ── Constantes ──
-const CLAUDE_MODEL = "claude-haiku-4-5";
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-haiku-4-5-20251001";
 const WOO_PUBLIC_BASE = (process.env.WOO_URL || "https://thealchemialab.com").replace(/\/$/, "");
 
 // ── Config follow-ups ──
