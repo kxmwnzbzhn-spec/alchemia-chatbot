@@ -218,7 +218,14 @@ describe('GET /api/followups/status', () => {
   test('200 con lista vacía inicial', async () => {
     const res = await request.get('/api/followups/status');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ sessions: [], total: 0 });
+    expect(res.body).toEqual({
+      enabled: true,
+      firstFollowupHours: 2,
+      secondFollowupHours: 20,
+      maxFollowups: 2,
+      sessions: [],
+      total: 0,
+    });
   });
 });
 
