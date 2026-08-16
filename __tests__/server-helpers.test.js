@@ -201,6 +201,16 @@ describe('mapProduct', () => {
   });
 });
 
+describe('isProductInStock', () => {
+  test('solo permite estado instock con cantidad positiva o no administrada', () => {
+    expect(server.isProductInStock({ stock_status: 'instock', stock_quantity: 3 })).toBe(true);
+    expect(server.isProductInStock({ stock_status: 'instock', stock_quantity: null })).toBe(true);
+    expect(server.isProductInStock({ stock_status: 'instock', stock_quantity: 0 })).toBe(false);
+    expect(server.isProductInStock({ stock_status: 'outofstock', stock_quantity: 8 })).toBe(false);
+    expect(server.isProductInStock({ stock_status: 'onbackorder', stock_quantity: 8 })).toBe(false);
+  });
+});
+
 describe('formatOrder', () => {
   test('extrae campos desde el shape de WooCommerce', () => {
     const order = {
