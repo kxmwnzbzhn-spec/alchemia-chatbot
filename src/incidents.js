@@ -53,6 +53,16 @@ function getTodayIncidents() {
   return data.incidents.filter(i => i.date === today);
 }
 
+// El reporte matutino debe incluir todo problema que siga pendiente, aunque se
+// haya registrado la tarde anterior. Así ninguna queja abierta se pierde por el
+// cambio de fecha y vuelve a aparecer cada mañana hasta que se resuelva.
+function getOpenIncidents() {
+  const data = readData();
+  return data.incidents
+    .filter(i => i.status === 'open')
+    .sort((a, b) => new Date(b.lastUpdate || b.createdAt || 0) - new Date(a.lastUpdate || a.createdAt || 0));
+}
+
 function detectIncidentType(message) {
   const m = message.toLowerCase();
   if (m.includes('dañ') || m.includes('roto') || m.includes('danad')) return 'PRODUCTO_DANADO';
@@ -71,4 +81,4 @@ function extractOrderNumber(message) {
   return m ? m[1] : null;
 }
 
-module.exports = { registerIncident, resolveIncident, getTodayIncidents, detectIncidentType, extractOrderNumber, readData };
+module.exports = { registerIncident, resolveIncident, getTodayIncidents, getOpenIncidents, detectIncidentType, extractOrderNumber, readData };

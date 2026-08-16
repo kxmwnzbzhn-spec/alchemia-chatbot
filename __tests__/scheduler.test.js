@@ -15,6 +15,7 @@ function freshScheduler() {
   jest.doMock('nodemailer', () => ({ createTransport: jest.fn() }));
   jest.doMock('../src/incidents', () => ({
     getTodayIncidents: jest.fn(() => []),
+    getOpenIncidents: jest.fn(() => []),
     readData: jest.fn(() => ({ incidents: [], lastReport: null })),
   }));
   axios = require('axios');
@@ -49,21 +50,31 @@ afterAll(() => {
 describe('scheduler.js — buildEmailHTML', () => {
   test('renderiza tabla HTML con filas por incidente', () => {
     const html = scheduler.buildEmailHTML([
-      { orderNumber: '1521', type: 'PRODUCTO_DANADO', clientName: 'Juan', phone: '555' },
-      { orderNumber: '999',  type: 'DEFECTO',         clientName: 'Ana',  phone: '777' },
+      { orderNumber: '1521', type: 'PRODUCTO_DANADO', clientName: 'Juan', phone: '555', detail: 'La caja llegó rota' },
+      { orderNumber: '999',  type: 'DEFECTO',         clientName: 'Ana',  phone: '777', detail: 'Atomizador defectuoso' },
     ]);
-    expect(html).toContain('Total incidencias abiertas: <strong>2</strong>');
-    expect(html).toContain('<td>1521</td>');
-    expect(html).toContain('<td>PRODUCTO_DANADO</td>');
+    expect(html).toContain('Total de problemas abiertos: <strong>2</strong>');
+    expect(html).toContain('<strong>1521</strong>');
+    expect(html).toContain('Producto dañado');
     expect(html).toContain('<td>Juan</td>');
     expect(html).toContain('<td>555</td>');
-    expect(html).toContain('<td>999</td>');
+    expect(html).toContain('<strong>999</strong>');
     expect(html).toContain('<td>Ana</td>');
+    expect(html).toContain('La caja llegó rota');
   });
 
   test('maneja lista vacía sin errores', () => {
     const html = scheduler.buildEmailHTML([]);
-    expect(html).toContain('Total incidencias abiertas: <strong>0</strong>');
+    expect(html).toContain('Total de problemas abiertos: <strong>0</strong>');
+  });
+
+  test('escapa contenido enviado por clientes', () => {
+    const html = scheduler.buildEmailHTML([
+      { orderNumber: '1', type: 'DEFECTO', clientName: '<b>Ana</b>', phone: '777', detail: '<script>alert(1)</script>' },
+    ]);
+    expect(html).toContain('&lt;b&gt;Ana&lt;/b&gt;');
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(html).not.toContain('<script>');
   });
 });
 
@@ -115,7 +126,7 @@ describe('scheduler.js — sendWhatsAppReport', () => {
     expect(body.to).toBe('52555');
     expect(body.type).toBe('text');
     // El cuerpo sólo contiene el abierto
-    expect(body.text.body).toContain('Total incidencias hoy: *1*');
+    expect(body.text.body).toContain('Total problemas abiertos: *1*');
     expect(body.text.body).toContain('#1');
     expect(body.text.body).not.toContain('#2');
     expect(config.headers.Authorization).toBe('Bearer tok');

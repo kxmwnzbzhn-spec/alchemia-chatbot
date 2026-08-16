@@ -261,6 +261,26 @@ describe('incidents.js — persistencia y lógica de negocio', () => {
     expect(today[0].detail).toBe('hoy');
   });
 
+  test('getOpenIncidents incluye problemas anteriores y excluye los resueltos', () => {
+    incidents.registerIncident({ phone: 'A', orderNumber: '1', type: 'DEFECTO', detail: 'pendiente' });
+    incidents.registerIncident({ phone: 'B', orderNumber: '2', type: 'NO_ENTREGADO', detail: 'resuelto' });
+    const data = incidents.readData();
+    const resolvedId = data.incidents.find(i => i.orderNumber === '2').id;
+    incidents.resolveIncident(resolvedId);
+
+    // Simular que el problema abierto se originó el día anterior.
+    const rewritten = incidents.readData();
+    rewritten.incidents.find(i => i.orderNumber === '1').date = '2000-01-01';
+    fs.writeFileSync(
+      path.join(tmpRoot, 'data', 'incidents.json'),
+      JSON.stringify(rewritten, null, 2),
+    );
+
+    const open = incidents.getOpenIncidents();
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({ orderNumber: '1', detail: 'pendiente', status: 'open' });
+  });
+
   test('persistencia sobrevive a múltiples cargas del módulo', () => {
     incidents.registerIncident({ phone: 'A', orderNumber: '1', type: 'DEFECTO', detail: 'x' });
     // Recargar el módulo apuntando al mismo tmpRoot
