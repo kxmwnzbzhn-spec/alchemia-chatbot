@@ -152,7 +152,9 @@ async function runDailyReport() {
 }
 
 function startScheduler() {
-  const reportTime = process.env.REPORT_TIME || '09:00';
+  // Hora operativa acordada para el reporte de incidencias. Se mantiene fija para
+  // evitar que una variable antigua del proveedor reprograme el correo por error.
+  const reportTime = '09:00';
   const [hour, minute] = reportTime.split(':');
   const cronExpr = `${minute} ${hour} * * *`;
   cron.schedule(cronExpr, () => {
