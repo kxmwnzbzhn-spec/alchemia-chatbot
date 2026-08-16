@@ -100,9 +100,10 @@ const woo = axios.create({
   timeout: 15000,
 });
 
-// Cache simple de productos (TTL 10 min) para reducir round-trips
+// El inventario es crítico para venta: caché breve para no recomendar un
+// artículo que se haya agotado hace pocos minutos.
 const productCache = { byId: new Map(), bySlug: new Map(), byTermAt: new Map() };
-const CACHE_TTL = 10 * 60 * 1000;
+const CACHE_TTL = 30 * 1000;
 
 function mapProduct(p) {
   return {
@@ -120,6 +121,13 @@ function mapProduct(p) {
   };
 }
 
+function isProductInStock(product) {
+  if (!product || product.stock_status !== "instock") return false;
+  // Cuando WooCommerce administra inventario, una cantidad 0 prevalece aunque
+  // el estado haya quedado desincronizado. null significa stock no administrado.
+  return product.stock_quantity == null || Number(product.stock_quantity) > 0;
+}
+
 async function searchProducts(query, { perPage = 5 } = {}) {
   const cacheKey = `q:${query}:${perPage}`;
   const cached = productCache.byTermAt.get(cacheKey);
@@ -127,25 +135,25 @@ async function searchProducts(query, { perPage = 5 } = {}) {
 
   let results = [];
   try {
-    const { data } = await woo.get("/products", { params: { search: query, per_page: perPage, status: "publish" } });
-    results = data.map(mapProduct);
+    const { data } = await woo.get("/products", { params: { search: query, per_page: perPage, status: "publish", stock_status: "instock" } });
+    results = data.map(mapProduct).filter(isProductInStock);
 
     if (!results.length) {
       const tagsResp = await woo.get("/products/tags", { params: { search: query, per_page: 5 } });
       if (tagsResp.data?.length) {
         const { data: byTag } = await woo.get("/products", {
-          params: { tag: tagsResp.data.map(t => t.id).join(","), per_page: perPage, status: "publish" }
+          params: { tag: tagsResp.data.map(t => t.id).join(","), per_page: perPage, status: "publish", stock_status: "instock" }
         });
-        results = byTag.map(mapProduct);
+        results = byTag.map(mapProduct).filter(isProductInStock);
       }
     }
     if (!results.length) {
       const catResp = await woo.get("/products/categories", { params: { search: query, per_page: 5 } });
       if (catResp.data?.length) {
         const { data: byCat } = await woo.get("/products", {
-          params: { category: catResp.data.map(c => c.id).join(","), per_page: perPage, status: "publish" }
+          params: { category: catResp.data.map(c => c.id).join(","), per_page: perPage, status: "publish", stock_status: "instock" }
         });
-        results = byCat.map(mapProduct);
+        results = byCat.map(mapProduct).filter(isProductInStock);
       }
     }
   } catch (err) { console.error("[WOO SEARCH]", err.message); return []; }
@@ -207,7 +215,7 @@ async function findAlternatives(product, max = 2) {
 
     const seen = new Set([product.id]);
     return pool
-      .filter(p => p.stock_status === "instock" && !seen.has(p.id) && (seen.add(p.id), true))
+      .filter(p => isProductInStock(p) && !seen.has(p.id) && (seen.add(p.id), true))
       .slice(0, max);
   } catch (err) { console.error("[ALT]", err.message); return []; }
 }
@@ -604,7 +612,7 @@ async function getShipmentByOrderId(orderId) {
 const tools = [
   {
     name: "buscar_productos",
-    description: "Busca perfumes en The Alchemia Lab por nombre, notas olfativas, familia (amaderado, floral, oud, acuático, oriental, etc.) o categoría (mujer, hombre, unisex). Devuelve nombre, precio, disponibilidad, descripción corta, imagen y permalink (URL de compra). Si un perfume está agotado, devuelve también 'alternativas' en stock similares.",
+    description: "Busca exclusivamente perfumes con existencias en The Alchemia Lab por nombre, notas olfativas, familia (amaderado, floral, oud, acuático, oriental, etc.) o categoría (mujer, hombre, unisex). Devuelve nombre, precio, disponibilidad, descripción corta, imagen y permalink (URL de compra). Nunca devuelve productos agotados.",
     input_schema: { type: "object", properties: { query: { type: "string", description: "Texto libre: nombre del perfume o descripción olfativa." } }, required: ["query"] }
   },
   {
@@ -625,7 +633,7 @@ const tools = [
 async function executeTool(name, input, session, phone) {
   if (name === "buscar_productos") {
     const productos = await searchProducts(input.query);
-    if (!productos.length) return JSON.stringify({ resultado: "No encontré ese perfume. ¿Puedes describirlo diferente (notas, familia, ocasión)?" });
+    if (!productos.length) return JSON.stringify({ resultado: "No encontré opciones disponibles con existencias. Pide otra familia, nota u ocasión para buscar alternativas en stock." });
     if (session) session.lastShownProducts = productos.map(p => ({
       id: p.id,
       slug: p.slug,
@@ -637,7 +645,7 @@ async function executeTool(name, input, session, phone) {
       stockStatus: p.stock_status,
     }));
 
-    const enriched = await Promise.all(productos.map(async (p) => {
+    const enriched = productos.map((p) => {
       const base = {
         id: p.id, name: p.name, slug: p.slug,
         precio: p.price ? `$${p.price} MXN` : null,
@@ -649,18 +657,25 @@ async function executeTool(name, input, session, phone) {
         imagen: p.image_url,
         link_compra: p.permalink,
       };
-      if (p.stock_status !== "instock") {
-        const alts = await findAlternatives(p, 2);
-        base.alternativas_en_stock = alts.map(a => ({ name: a.name, precio: a.price ? `$${a.price} MXN` : null, link_compra: a.permalink }));
-      }
       return base;
-    }));
+    });
     return JSON.stringify({ productos: enriched });
   }
 
   if (name === "obtener_detalle_producto") {
     const p = await getProductByIdOrSlug(input.id_o_slug);
     if (!p) return JSON.stringify({ resultado: `No encontré el producto ${input.id_o_slug}.` });
+    if (!isProductInStock(p)) {
+      const alts = await findAlternatives(p, 2);
+      return JSON.stringify({
+        resultado: `${p.name} no tiene existencias y no debe ofrecerse para compra.`,
+        alternativas_en_stock: alts.map(a => ({
+          name: a.name,
+          precio: a.price ? `$${a.price} MXN` : null,
+          link_compra: a.permalink,
+        })),
+      });
+    }
     const out = {
       id: p.id, name: p.name, slug: p.slug,
       precio: p.price ? `$${p.price} MXN` : null,
@@ -672,10 +687,6 @@ async function executeTool(name, input, session, phone) {
       notas: p.tags, categorias: p.categories,
       imagen: p.image_url, link_compra: p.permalink,
     };
-    if (p.stock_status !== "instock") {
-      const alts = await findAlternatives(p, 2);
-      out.alternativas_en_stock = alts.map(a => ({ name: a.name, precio: a.price ? `$${a.price} MXN` : null, link_compra: a.permalink }));
-    }
     return JSON.stringify({ producto: out });
   }
 
@@ -778,6 +789,7 @@ FLUJO COMERCIAL
 
 REGLAS DE VENTA Y CONFIANZA
 - Antes de afirmar precio, promoción, existencia, notas o características de un producto, usa buscar_productos u obtener_detalle_producto.
+- Recomienda y comparte enlace únicamente de productos cuya disponibilidad sea "EN STOCK". Nunca ofrezcas, enlaces ni des seguimiento a productos agotados, por pedido o con cantidad 0. Si preguntan por uno sin existencias, informa brevemente que no está disponible y presenta solo alternativas en stock devueltas por la herramienta.
 - No inventes descuentos, regalos, apartados, escasez, tiempos de entrega ni beneficios.
 - No afirmes “más vendido”, “favorito”, “viral”, “edición limitada” o popularidad si la herramienta no entrega ese dato de forma explícita.
 - No puedes crear, apartar, cobrar ni confirmar pedidos por el cliente. Nunca digas “yo lo pido”, “te lo aparto”, “te preparo el pedido” o “ya quedó”. La compra se completa únicamente en el enlace oficial.
@@ -956,9 +968,30 @@ async function followupCycle() {
         continue;
       }
 
+      // Revalidar inventario justo antes de recuperar la venta. El artículo pudo
+      // agotarse después de la conversación inicial y nunca debemos promoverlo.
+      const selected = s.lastShownProducts[0];
+      const currentProduct = await getProductByIdOrSlug(selected.id || selected.slug);
+      if (!isProductInStock(currentProduct)) {
+        console.log(`[FOLLOWUP] ${phone}: producto sin stock → seguimiento cancelado`);
+        s.followupCancelled = true;
+        continue;
+      }
+      s.lastShownProducts[0] = {
+        ...selected,
+        id: currentProduct.id,
+        slug: currentProduct.slug,
+        name: currentProduct.name,
+        link: currentProduct.permalink,
+        price: currentProduct.price,
+        regularPrice: currentProduct.regular_price,
+        onSale: !!currentProduct.on_sale,
+        stockStatus: currentProduct.stock_status,
+      };
+
       // Los productos ya rebajados no acumulan cupones: preserva margen y evita
       // prometer un descuento que WooCommerce no debería apilar.
-      const productOnSale = !!s.lastShownProducts?.[0]?.onSale;
+      const productOnSale = !!currentProduct.on_sale;
 
       // Generar / reusar cupón únicamente para productos a precio regular.
       let coupon = s.lastCouponCode ? { code: s.lastCouponCode, expiresAt: s.lastCouponExpiresAt } : null;
@@ -1283,6 +1316,7 @@ module.exports = {
   generateCouponCode,
   verifyMetaSignature,
   mapProduct,
+  isProductInStock,
   formatOrder,
   buildFollowupMessage1,
   buildFollowupMessage2,
