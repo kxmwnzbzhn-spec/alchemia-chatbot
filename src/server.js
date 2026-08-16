@@ -1,4 +1,4 @@
-en/**
+/**
  * ═══════════════════════════════════════════════════════
  * CHATBOT WHATSAPP — The Alchemia Lab
  * v2.2 — Productos con link directo + alternativas + FOLLOW-UPS para cerrar venta
