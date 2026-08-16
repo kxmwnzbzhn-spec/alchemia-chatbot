@@ -39,7 +39,9 @@ const FOLLOWUP_FIRST_HOURS = parseFloat(process.env.FOLLOWUP_FIRST_HOURS || "2")
 const FOLLOWUP_SECOND_HOURS = parseFloat(process.env.FOLLOWUP_SECOND_HOURS || "20");
 const FOLLOWUP_COUPON_HOURS = parseInt(process.env.FOLLOWUP_COUPON_HOURS || "48", 10);
 const FOLLOWUP_CYCLE_MIN = parseInt(process.env.FOLLOWUP_CYCLE_MIN || "5", 10);
-const FOLLOWUP_ENABLED = String(process.env.FOLLOWUP_ENABLED || "true") === "true";
+// Recuperación comercial autorizada: queda activa de forma explícita para que
+// una variable antigua del proveedor no la deshabilite silenciosamente.
+const FOLLOWUP_ENABLED = true;
 
 // ── Llamada directa a Anthropic ──
 async function callClaude({ system, messages, tools, max_tokens = 1024 }) {
@@ -1092,7 +1094,14 @@ app.get("/api/followups/status", (_req, res) => {
       lastCouponCode: s.lastCouponCode,
     });
   }
-  res.json({ sessions: out, total: out.length });
+  res.json({
+    enabled: FOLLOWUP_ENABLED,
+    firstFollowupHours: FOLLOWUP_FIRST_HOURS,
+    secondFollowupHours: FOLLOWUP_SECOND_HOURS,
+    maxFollowups: 2,
+    sessions: out,
+    total: out.length,
+  });
 });
 
 app.get("/api/diagnostics", async (req, res) => {
