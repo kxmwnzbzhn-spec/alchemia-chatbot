@@ -48,7 +48,7 @@ describe('searchProducts (WooCommerce)', () => {
       short_description: 'Acuático', permalink: 'https://shop/cenote',
     });
     expect(mockWoo.get).toHaveBeenCalledWith('/products', {
-      params: { search: 'cenote', per_page: 5, status: 'publish' },
+      params: { search: 'cenote', per_page: 5, status: 'publish', stock_status: 'instock' },
     });
   });
 
@@ -70,8 +70,20 @@ describe('searchProducts (WooCommerce)', () => {
       params: { search: 'amaderado', per_page: 5 },
     });
     expect(mockWoo.get).toHaveBeenNthCalledWith(3, '/products', {
-      params: { tag: '10', per_page: 5, status: 'publish' },
+      params: { tag: '10', per_page: 5, status: 'publish', stock_status: 'instock' },
     });
+  });
+
+  test('excluye defensivamente productos agotados o con cantidad 0', async () => {
+    mockWoo.get.mockResolvedValueOnce({
+      data: [
+        { id: 1, slug: 'ok', name: 'Disponible', price: '399', stock_status: 'instock', stock_quantity: 2, categories: [], tags: [], images: [], permalink: '/ok' },
+        { id: 2, slug: 'zero', name: 'Cantidad cero', price: '399', stock_status: 'instock', stock_quantity: 0, categories: [], tags: [], images: [], permalink: '/zero' },
+        { id: 3, slug: 'out', name: 'Agotado', price: '399', stock_status: 'outofstock', stock_quantity: 8, categories: [], tags: [], images: [], permalink: '/out' },
+      ],
+    });
+    const results = await server.searchProducts('perfume');
+    expect(results.map(p => p.id)).toEqual([1]);
   });
 
   test('fallback a categorías cuando search + tags vacíos', async () => {
