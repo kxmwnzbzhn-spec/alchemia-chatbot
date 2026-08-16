@@ -291,10 +291,10 @@ describe('scheduler.js — startScheduler', () => {
     expect(opts).toEqual({ timezone: 'America/Mexico_City' });
   });
 
-  test('usa REPORT_TIME cuando se define', () => {
+  test('ignora una REPORT_TIME antigua y conserva las 09:00 acordadas', () => {
     process.env.REPORT_TIME = '18:30';
     scheduler = freshScheduler();
     scheduler.startScheduler();
-    expect(cron.schedule.mock.calls[0][0]).toBe('30 18 * * *');
+    expect(cron.schedule.mock.calls[0][0]).toBe('00 09 * * *');
   });
 });
