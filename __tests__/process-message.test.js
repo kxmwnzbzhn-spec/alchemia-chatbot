@@ -66,7 +66,7 @@ describe('processMessage — loop de Claude', () => {
     expect(mockAxiosPost).toHaveBeenCalledTimes(1);
     const [url, body, config] = mockAxiosPost.mock.calls[0];
     expect(url).toBe('https://api.anthropic.com/v1/messages');
-    expect(body.model).toBe('claude-haiku-4-5');
+    expect(body.model).toBe('claude-haiku-4-5-20251001');
     expect(body.tools).toBeDefined();
     expect(config.headers['anthropic-version']).toBe('2023-06-01');
   });
@@ -132,8 +132,14 @@ describe('processMessage — loop de Claude', () => {
     await server.processMessage('52000', 'busco oud');
     const session = server.sessions.get('52000');
     expect(session.lastShownProducts).toEqual([
-      { id: 1, slug: 'oud-1', name: 'Oud 1', link: 'u1' },
-      { id: 2, slug: 'oud-2', name: 'Oud 2', link: 'u2' },
+      {
+        id: 1, slug: 'oud-1', name: 'Oud 1', link: 'u1',
+        price: '1', regularPrice: undefined, onSale: false, stockStatus: 'instock',
+      },
+      {
+        id: 2, slug: 'oud-2', name: 'Oud 2', link: 'u2',
+        price: '2', regularPrice: undefined, onSale: false, stockStatus: 'instock',
+      },
     ]);
   });
 

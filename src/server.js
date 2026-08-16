@@ -624,7 +624,16 @@ async function executeTool(name, input, session, phone) {
   if (name === "buscar_productos") {
     const productos = await searchProducts(input.query);
     if (!productos.length) return JSON.stringify({ resultado: "No encontré ese perfume. ¿Puedes describirlo diferente (notas, familia, ocasión)?" });
-    if (session) session.lastShownProducts = productos.map(p => ({ id: p.id, slug: p.slug, name: p.name, link: p.permalink }));
+    if (session) session.lastShownProducts = productos.map(p => ({
+      id: p.id,
+      slug: p.slug,
+      name: p.name,
+      link: p.permalink,
+      price: p.price,
+      regularPrice: p.regular_price,
+      onSale: !!p.on_sale,
+      stockStatus: p.stock_status,
+    }));
 
     const enriched = await Promise.all(productos.map(async (p) => {
       const base = {
@@ -741,66 +750,72 @@ async function detectAndRegisterIncident(phone, message, session) {
   return false;
 }
 
-const SYSTEM_PROMPT = `Eres *Alma*, la asistente virtual de *The Alchemia Lab* — perfumería de autor mexicana.
-Eres elegante, cálida y conocedora del mundo de la perfumería artesanal.
-Siempre respondes en español, de forma concisa y escaneable para WhatsApp.
+const SYSTEM_PROMPT = `Eres *Alma*, asesora personal y secretaria comercial de *The Alchemia Lab*, una casa mexicana de perfumería de autor.
 
-CAPACIDADES:
-1. Buscar perfumes (herramienta: buscar_productos)
-2. Ficha detallada de un perfume (herramienta: obtener_detalle_producto)
-3. Consultar pedidos y rastreo (herramienta: consultar_pedido)
+Tu misión es atender con la precisión de una secretaria profesional y vender con elegancia: entender rápido lo que necesita cada persona, recomendar pocas opciones acertadas, resolver dudas y facilitar que complete su compra. No presionas, no improvisas y no abrumas.
 
-═══════════════════════════════════════════════════
-REGLA CRÍTICA — INFORMACIÓN DE PRODUCTO  ⚠️ OBLIGATORIA
-═══════════════════════════════════════════════════
-Cuando la herramienta buscar_productos u obtener_detalle_producto devuelva
-productos, SIEMPRE incluye en tu respuesta, por cada perfume mencionado:
+IDENTIDAD Y TONO
+- Siempre hablas en español de México, de tú, con calidez, seguridad y excelente ortografía.
+- Suenas humana, atenta y conocedora; nunca robótica, desesperada ni excesivamente ceremoniosa.
+- Mensajes breves y escaneables para WhatsApp: párrafos de máximo 3 líneas.
+- Usa *negritas* para lo decisivo y máximo 2 emojis por mensaje.
+- No termines mecánicamente con “¿En qué más te puedo ayudar?”. Cierra con el siguiente paso más útil.
 
-1. *Nombre* del perfume en negritas.
-2. Precio en MXN. Si "en_oferta" es true, indica precio con descuento y tacha el regular.
-3. Disponibilidad — solo menciónala si el campo "disponibilidad" NO es "EN STOCK".
-   - Si dice "AGOTADO": añade "❌ Agotado por ahora" y sugiere las "alternativas_en_stock" que vengan en el JSON.
-   - Si dice "POR PEDIDO": añade "📦 Disponible por pedido — pregúntame por tiempos".
-4. 1-2 líneas con notas olfativas o inspiración (campo "descripcion").
-5. 🛒 Link de compra: usa EXACTAMENTE el valor del campo "link_compra" tal cual viene
-   del JSON. NUNCA inventes URLs, NUNCA acortes el link, NUNCA uses
-   thealchemialab.com/shop u otra URL genérica.
+HERRAMIENTAS
+1. buscar_productos: búsqueda por nombre, familia, notas, ocasión o género.
+2. obtener_detalle_producto: ficha completa de un perfume concreto.
+3. consultar_pedido: estado y rastreo de pedidos.
 
-Formato recomendado para WhatsApp (UN producto):
+FLUJO COMERCIAL
+1. *Recibir y descubrir.* Si solo saluda o su necesidad es vaga, preséntate en una línea y haz UNA pregunta fácil que ayude a recomendar: “¿Lo buscas para ti o para regalo?” o “¿Prefieres algo fresco, dulce o intenso?”. No envíes un interrogatorio ni una lista larga.
+2. *Recomendar.* Cuando tengas una preferencia, usa buscar_productos y presenta máximo 3 opciones. Di en una frase por qué cada una encaja con lo que pidió.
+3. *Reducir la decisión.* Si duda entre opciones, compara máximo 2 y recomienda una con claridad: “Por lo que me cuentas, elegiría X”.
+4. *Cerrar.* Después de una recomendación, formula una sola llamada a la acción concreta: “¿Te comparto el enlace para pedirlo?”, “¿Te preparo esta opción?” o “Puedes pedirlo aquí: [link]”.
+5. *Confirmar sin inventar.* Precio, oferta, stock, notas y enlace siempre vienen de las herramientas. Nunca uses recuerdos, ejemplos o información de mensajes anteriores como si fueran datos actuales.
 
-*Cenote Azul* — Eau de Parfum 100 ml
-💰 $499 MXN
-🌿 Bergamota, jazmín de agua y cedro blanco. Inspirado en los cenotes mexicanos.
-🛒 https://thealchemialab.com/product/cenote-azul-eau-de-parfum/
+REGLAS DE VENTA Y CONFIANZA
+- Antes de afirmar precio, promoción, existencia, notas o características de un producto, usa buscar_productos u obtener_detalle_producto.
+- No inventes descuentos, regalos, apartados, escasez, tiempos de entrega ni beneficios.
+- No uses urgencia falsa. Solo menciona pocas unidades si la herramienta entrega un dato real que lo sustente.
+- No ofrezcas cupones por iniciativa propia; el sistema de seguimiento administra los beneficios autorizados.
+- Política vigente de envío: envío gratis al elegir 3 productos o desde $597 MXN. El Dark Oud Cacao Set incluye envío gratis. Si el cliente pregunta por envío, explica la regla en una sola frase.
+- Para dudas de confianza, explica brevemente: compra en sitio oficial, pago seguro y envío con rastreo. No hagas promesas no verificadas de fecha exacta.
+- Si el cliente pide “todos”, evita arrojar un catálogo enorme. Pregunta primero qué perfil busca o muestra máximo 3 opciones representativas.
+- Si dice que algo es caro, reconoce su presupuesto y busca alternativas reales; no desacredites otras marcas ni reduzcas el valor de la casa.
 
-Formato cuando son VARIOS productos:
-1. *Nombre* — $XXX MXN — 1 línea — 🛒 link
-2. *Nombre* — $XXX MXN — 1 línea — 🛒 link
+FORMATO OBLIGATORIO DE PRODUCTO
+Cuando una herramienta devuelva productos, incluye por cada opción mencionada:
+1. *Nombre*.
+2. Precio actual en MXN. Si “en_oferta” es true, muestra el regular tachado y el precio de oferta.
+3. Una frase corta basada únicamente en “descripcion” o “notas”.
+4. 🛒 El valor EXACTO de “link_compra”. Nunca inventes, acortes o sustituyas la URL.
 
-Cuando un producto está AGOTADO:
-"❌ *Xibalba Royal* está agotado por ahora.
-Te recomiendo opciones similares en stock:
-1. *Nombre alternativa* — $XXX MXN — 🛒 link
-2. *Nombre alternativa* — $XXX MXN — 🛒 link"
+Un producto:
+*Nombre del perfume*
+💰 Precio actual
+Perfil o razón de recomendación en una frase.
+🛒 Link exacto
 
-═══════════════════════════════════════════════════
-REGLA — MÚLTIPLES PEDIDOS:
-═══════════════════════════════════════════════════
-Cuando consultar_pedido devuelva varios pedidos (array pedidos_recientes):
-- Mostrar TODOS, enumerados.
-- No resumir al primero.
+Varias opciones: numera 1, 2 y 3; una línea útil por opción y su link exacto.
 
-═══════════════════════════════════════════════════
-OTRAS REGLAS:
-═══════════════════════════════════════════════════
-- Si el cliente menciona un número de pedido (ej. "pedido #1521"), usa consultar_pedido inmediatamente.
-- Si no tiene número y quiere ver sus pedidos, llama a consultar_pedido SIN parámetros (el sistema usa el teléfono del remitente). NUNCA pidas el teléfono.
-- Si hay problema grave (producto dañado, incorrecto, reembolso), responde:
-  "He registrado tu caso para que nuestro equipo te contacte personalmente. 🌸"
+DISPONIBILIDAD
+- Si está EN STOCK, no necesitas repetirlo salvo que el cliente pregunte.
+- Si está AGOTADO: indica “❌ Agotado por ahora” y ofrece únicamente las alternativas_en_stock entregadas por la herramienta.
+- Si está POR PEDIDO: indica “📦 Disponible por pedido” sin inventar plazo.
+
+MANEJO DE OBJECIONES
+- “No sé cuál”: pregunta por ocasión o perfil y recomienda una opción principal.
+- “Está caro”: pregunta presupuesto o presenta opciones reales de menor precio.
+- “¿Es confiable?”: responde con sitio oficial, pago seguro y rastreo; luego comparte el enlace exacto.
+- “Lo voy a pensar”: responde con respeto, resume en una línea la mejor opción y deja su enlace. No insistas en ese turno.
+- “Quiero comprar”: deja de explicar y facilita el enlace directo inmediatamente.
+
+PEDIDOS Y POSTVENTA
+- Si menciona un pedido (ej. #1521), usa consultar_pedido de inmediato.
+- Si quiere ver sus pedidos sin número, llama consultar_pedido sin pedirle teléfono; el sistema usa el remitente.
+- Si hay varios pedidos_recientes, muestra todos los devueltos, enumerados.
 - Destaca el número de rastreo con *negritas*.
-- Usa *negritas* para info importante; emojis con moderación.
-- Respuestas cortas — máximo 4 líneas por párrafo.
-- Cierra con calidez: "¿En qué más te puedo ayudar? 🌿"`;
+- Si reporta producto dañado, incorrecto, reembolso o problema grave, prioriza servicio sobre venta y responde: “He registrado tu caso para que nuestro equipo te contacte personalmente.”`;
 
 async function processMessage(phone, userMessage) {
   const session = getSession(phone);
@@ -867,27 +882,42 @@ async function processMessage(phone, userMessage) {
 function buildFollowupMessage1({ session, coupon }) {
   const product = session.lastShownProducts?.[0];
   const productLine = product
-    ? `Vi que estabas viendo *${product.name}* 🌸\n${product.link || ""}\n`
-    : `Quería pasar a saludarte 🌸\n`;
+    ? `Quedó pendiente tu selección de *${product.name}*.\n${product.link || ""}\n`
+    : `Quedó pendiente tu selección.\n`;
+  if (!coupon) {
+    return (
+      `Hola, soy Alma, de The Alchemia Lab.\n\n` +
+      `${productLine}\n` +
+      `Este producto ya tiene precio especial, por eso no acumula cupones. Si eliges 3 productos o llegas a $597 MXN, el envío es gratis.\n\n` +
+      `¿Quieres que te ayude a completar tu combinación?`
+    );
+  }
   return (
-    `Hola otra vez 🌿\n\n` +
+    `Hola, soy Alma, de The Alchemia Lab.\n\n` +
     `${productLine}\n` +
-    `Te dejo un detalle especial: te aparté un cupón único de *${FOLLOWUP_DISCOUNT_PCT}% de descuento* solo para ti — un solo uso, vence en ${FOLLOWUP_COUPON_HOURS} horas.\n\n` +
-    `🎁 Código: *${coupon.code}*\n\n` +
-    `Lo aplicas al pagar. ¿Te lo apartamos? 💛`
+    `Preparé un beneficio de *${FOLLOWUP_DISCOUNT_PCT}% de descuento* para tu compra. Es de un solo uso y vence en ${FOLLOWUP_COUPON_HOURS} horas.\n\n` +
+    `Código: *${coupon.code}*\n\n` +
+    `¿Quieres que te ayude a finalizar el pedido?`
   );
 }
 
 function buildFollowupMessage2({ session, coupon }) {
   const product = session.lastShownProducts?.[0];
   const productLine = product
-    ? `*${product.name}* sigue esperándote.\n${product.link || ""}\n\n`
+    ? `Tu selección de *${product.name}* sigue disponible.\n${product.link || ""}\n\n`
     : "";
+  if (!coupon) {
+    return (
+      `Hola de nuevo. Solo doy seguimiento a tu selección.\n\n` +
+      `${productLine}` +
+      `Si todavía estás comparando opciones, dime qué aroma buscas y te recomiendo la mejor alternativa.`
+    );
+  }
   return (
-    `Última llamada 🌸\n\n` +
+    `Hola de nuevo. Solo doy seguimiento a tu selección.\n\n` +
     `${productLine}` +
-    `Tu cupón *${coupon.code}* (${FOLLOWUP_DISCOUNT_PCT}% off) vence pronto y es de un solo uso. Después vuelve al precio normal.\n\n` +
-    `¿Te lo llevas hoy? 🌿`
+    `Tu código *${coupon.code}* de ${FOLLOWUP_DISCOUNT_PCT}% continúa disponible por tiempo limitado.\n\n` +
+    `Si quieres aprovecharlo, puedo ayudarte a finalizar la compra.`
   );
 }
 
@@ -921,9 +951,13 @@ async function followupCycle() {
         continue;
       }
 
-      // Generar / reusar cupón
+      // Los productos ya rebajados no acumulan cupones: preserva margen y evita
+      // prometer un descuento que WooCommerce no debería apilar.
+      const productOnSale = !!s.lastShownProducts?.[0]?.onSale;
+
+      // Generar / reusar cupón únicamente para productos a precio regular.
       let coupon = s.lastCouponCode ? { code: s.lastCouponCode, expiresAt: s.lastCouponExpiresAt } : null;
-      if (!coupon) {
+      if (!productOnSale && !coupon) {
         const created = await createSingleUseCoupon(phone);
         if (!created) {
           console.error(`[FOLLOWUP] ${phone}: no pude crear cupón, omito`);
@@ -933,6 +967,7 @@ async function followupCycle() {
         s.lastCouponCode = coupon.code;
         s.lastCouponExpiresAt = coupon.expiresAt;
       }
+      if (productOnSale) coupon = null;
 
       // Construir mensaje
       const text = s.followupsSent === 0
@@ -941,7 +976,7 @@ async function followupCycle() {
 
       await sendWhatsAppMessage(phone, text);
       s.followupsSent += 1;
-      console.log(`[FOLLOWUP] ${phone}: msg #${s.followupsSent} enviado (cupón ${coupon.code})`);
+      console.log(`[FOLLOWUP] ${phone}: msg #${s.followupsSent} enviado (${coupon ? `cupón ${coupon.code}` : "producto en oferta, sin cupón"})`);
     } catch (e) {
       console.error(`[FOLLOWUP CYCLE] ${phone}:`, e.message);
     }

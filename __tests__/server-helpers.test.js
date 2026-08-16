@@ -303,15 +303,15 @@ describe('buildFollowupMessage1 / buildFollowupMessage2', () => {
       coupon,
     });
     expect(text).toContain('ALMA-4567-ABCDEF');
-    expect(text).toContain('saludarte');
+    expect(text).toContain('selección');
   });
 
-  test('msg2 marca última llamada e incluye cupón', () => {
+  test('msg2 da seguimiento profesional e incluye cupón', () => {
     const text = buildFollowupMessage2({
       session: { lastShownProducts: [{ name: 'Xibalba', link: 'https://shop/x' }] },
       coupon,
     });
-    expect(text).toContain('Última llamada');
+    expect(text).toContain('seguimiento');
     expect(text).toContain('ALMA-4567-ABCDEF');
     expect(text).toContain('Xibalba');
   });
@@ -321,7 +321,19 @@ describe('buildFollowupMessage1 / buildFollowupMessage2', () => {
       session: { lastShownProducts: [] },
       coupon,
     });
-    expect(text).toContain('Última llamada');
+    expect(text).toContain('seguimiento');
     expect(text).toContain('ALMA-4567-ABCDEF');
+  });
+
+  test('producto en oferta recibe seguimiento sin cupón adicional', () => {
+    const session = {
+      lastShownProducts: [{ name: 'Legacy Born', link: 'https://shop/legacy', onSale: true }],
+    };
+    const text1 = buildFollowupMessage1({ session, coupon: null });
+    const text2 = buildFollowupMessage2({ session, coupon: null });
+    expect(text1).toContain('precio especial');
+    expect(text1).not.toContain('15%');
+    expect(text2).toContain('Legacy Born');
+    expect(text2).not.toContain('cupón');
   });
 });
