@@ -1,4 +1,9 @@
-/**
+// Check asesor antes de AI
+    if (necesitaAsesor(message)) {
+      const txt = 'Entiendo, te conecto con un asesor ahora mismo! Escribele por WhatsApp: https://wa.me/529992840607 - Nuestro equipo te atendera de inmediato.';
+      return res.json({ reply: txt, productImage: null });
+    }
+    /**
  * ═══════════════════════════════════════════════════════
  * CHATBOT WHATSAPP — The Alchemia Lab
  * v2.2 — Productos con link directo + alternativas + FOLLOW-UPS para cerrar venta
@@ -1071,12 +1076,7 @@ app.post("/webhook", async (req, res) => {
       const phone = message.from;
       const text = message.text.body;
       console.log(`[MSG IN] ${phone}: ${text}`);
-      // Check asesor antes de AI
-    if (necesitaAsesor(message)) {
-      const txt = 'Entiendo, te conecto con un asesor ahora mismo! Escribele por WhatsApp: https://wa.me/529992840607 - Nuestro equipo te atendera de inmediato.';
-      return res.json({ reply: txt, productImage: null });
-    }
-    const reply = await processMessage(phone, text);
+      const reply = await processMessage(phone, text);
       await sendWhatsAppMessage(phone, reply.text);
       if (reply.productImage) await sendWhatsAppImage(phone, reply.productImage.imageUrl, reply.productImage.caption);
       return;
@@ -1114,7 +1114,11 @@ app.post("/api/demo/chat", async (req, res) => {
   try {
     const { phone = "demo_user", message } = req.body;
     if (!message) return res.status(400).json({ error: "Mensaje requerido" });
-    const reply = await processMessage(phone, message);
+// Asesor humano
+    if (necesitaAsesor(message)) {
+      return res.json({ reply: 'Entiendo! Te conecto con un asesor: https://wa.me/529992840607', productImage: null });
+    }
+        const reply = await processMessage(phone, message);
     res.json({ reply: reply.text, productImage: reply.productImage || null });
   } catch (err) {
     console.error("[DEMO CHAT ERROR]", err.message, err.status);
