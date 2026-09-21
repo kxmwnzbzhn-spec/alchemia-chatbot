@@ -869,7 +869,7 @@ async function processMessage(phone, userMessage) {
   // Canalizar a asesor humano si es necesario
   if (necesitaAsesor(userMessage)) {
     const resp = 'Entiendo, te conecto con un asesor ahora mismo! Escribele por WhatsApp: https://wa.me/529992840607 - Nuestro equipo te atendera de inmediato.';
-    return { reply: resp, productImage: null };
+    return { text: resp, productImage: null };
   });
     session.history.push({ role: 'assistant', content: resp });
     return { reply: resp, productImage: null };
