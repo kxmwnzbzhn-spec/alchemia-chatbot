@@ -1071,7 +1071,12 @@ app.post("/webhook", async (req, res) => {
       const phone = message.from;
       const text = message.text.body;
       console.log(`[MSG IN] ${phone}: ${text}`);
-      const reply = await processMessage(phone, text);
+      // Check asesor antes de AI
+    if (necesitaAsesor(message)) {
+      const txt = 'Entiendo, te conecto con un asesor ahora mismo! Escribele por WhatsApp: https://wa.me/529992840607 - Nuestro equipo te atendera de inmediato.';
+      return res.json({ reply: txt, productImage: null });
+    }
+    const reply = await processMessage(phone, text);
       await sendWhatsAppMessage(phone, reply.text);
       if (reply.productImage) await sendWhatsAppImage(phone, reply.productImage.imageUrl, reply.productImage.caption);
       return;
