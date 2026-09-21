@@ -834,6 +834,16 @@ PEDIDOS Y POSTVENTA
 - Destaca el número de rastreo con *negritas*.
 - Si reporta producto dañado, incorrecto, reembolso o problema grave, prioriza servicio sobre venta y responde: “He registrado tu caso para que nuestro equipo te contacte personalmente.”`;
 
+
+// Detectar si cliente pide asesor
+function necesitaAsesor(msg) {
+  const m = msg.toLowerCase();
+  return m.includes('asesor') || m.includes('humano') || m.includes('persona') || 
+         m.includes('queja') || m.includes('devolucion') || m.includes('reembolso') ||
+         m.includes('danad') || m.includes('roto') || m.includes('no funciona') ||
+         m.includes('mal estado') || m.includes('hablar con alguien');
+}
+
 async function processMessage(phone, userMessage) {
   const session = getSession(phone);
 
@@ -855,7 +865,15 @@ async function processMessage(phone, userMessage) {
 
   const mentionedOrder = extractOrderNumber(userMessage);
   if (mentionedOrder) session.knownOrder = mentionedOrder;
-  session.history.push({ role: "user", content: userMessage });
+  
+  // Canalizar a asesor humano si es necesario
+  if (necesitaAsesor(userMessage)) {
+    const resp = 'Entiendo, te conecto con un asesor ahora mismo 💬 Escríbele por WhatsApp: https://wa.me/529992840607 — Nuestro equipo te atenderá de inmediato.';
+    session.history.push({ role: 'user', content: userMessage });
+    session.history.push({ role: 'assistant', content: resp });
+    return resp;
+  }
+session.history.push({ role: "user", content: userMessage });
   if (session.history.length > 20) session.history = session.history.slice(-20);
 
   let messages = [...session.history];
