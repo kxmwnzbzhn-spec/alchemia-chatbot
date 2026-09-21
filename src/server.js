@@ -871,7 +871,7 @@ async function processMessage(phone, userMessage) {
     const resp = 'Entiendo, te conecto con un asesor ahora mismo 💬 Escríbele por WhatsApp: https://wa.me/529992840607 — Nuestro equipo te atenderá de inmediato.';
     session.history.push({ role: 'user', content: userMessage });
     session.history.push({ role: 'assistant', content: resp });
-    return resp;
+    return { reply: resp, productImage: null };
   }
 session.history.push({ role: "user", content: userMessage });
   if (session.history.length > 20) session.history = session.history.slice(-20);
