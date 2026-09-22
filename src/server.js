@@ -32,6 +32,31 @@ const crypto = require("crypto");
 const { registerIncident, resolveIncident, getTodayIncidents, detectIncidentType, extractOrderNumber, readData } = require("./incidents");
 const { startScheduler, runDailyReport } = require("./scheduler");
 
+
+// ===== SUPABASE SILENCE CHECK =====
+const SUPABASE_URL = 'https://wnuhslmryspnypbxbfjf.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_mjxvvT2AaoyDYk9-LYgWqw_KhDji0CE';
+
+async function isPhoneSilenced(phone) {
+  try {
+    // Normalizar teléfono: quitar código país si viene con 52
+    const normalized = phone.replace(/^\+?52/, '').replace(/\D/g, '');
+    const url = `${SUPABASE_URL}/rest/v1/whatsapp_silence?phone=eq.${normalized}&silenced_until=gt.${new Date().toISOString()}&select=phone,silenced_until,reason&limit=1`;
+    const resp = await axios.get(url, {
+      headers: {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    return resp.data && resp.data.length > 0;
+  } catch (e) {
+    console.error('[SILENCE CHECK ERROR]', e.message);
+    return false; // Si falla, no silenciar
+  }
+}
+// ===================================
+
 const app = express();
 
 // ── Constantes ──
@@ -849,7 +874,15 @@ function necesitaAsesor(msg) {
          m.includes('mal estado') || m.includes('hablar con alguien');
 }
 
-async function processMessage(phone, userMessage) {
+              // Verificar silencio en Supabase
+              const silenced = await isPhoneSilenced(phone);
+              if (silenced) {
+                console.log('[SILENCE] Número silenciado, enviando a asesor:', phone);
+                const silenceMsg = 'Hola, en este momento un asesor humano está atendiendo tu caso. Te contactaremos pronto. Si es urgente: https://wa.me/529992840607';
+                await sendWhatsAppMessage(phone, silenceMsg);
+                return;
+              }
+              async function processMessage(phone, userMessage) {
   const session = getSession(phone);
 
   // 1) Marcar incidente si aplica (bloquea follow-ups internamente)
