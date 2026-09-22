@@ -1,0 +1,156 @@
+name: Payment Reminders - The Alchemia Lab
+
+on:
+  schedule:
+    # 9 AM hora Mexico (UTC-6) = 15:00 UTC
+    - cron: '0 15 * * *'
+    # 2 PM hora Mexico = 20:00 UTC
+    - cron: '0 20 * * *'
+    # 6 PM hora Mexico = 00:00 UTC (siguiente dia)
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Permite correr manualmente
+
+jobs:
+  send-reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Payment Reminders
+        uses: actions/github-script@v7
+        env:
+          WOO_URL: ${{ secrets.ALMA_WOO_URL }}
+          WOO_KEY: ${{ secrets.ALMA_WOO_KEY }}
+          WOO_SECRET: ${{ secrets.ALMA_WOO_SECRET }}
+          WA_PHONE_ID: ${{ secrets.ALMA_WA_PHONE_ID }}
+          WA_TOKEN: ${{ secrets.ALMA_WA_TOKEN }}
+          WA_TEMPLATE: ${{ secrets.ALMA_WA_TEMPLATE }}
+          SUPABASE_URL: https://wnuhslmryspnypbxbfjf.supabase.co
+          SUPABASE_KEY: ${{ secrets.ALMA_SUPABASE_KEY }}
+        with:
+          script: |
+            const axios = require('axios');
+
+            // 1. Obtener ordenes pendientes de las ultimas 24h
+            const wooAuth = Buffer.from(`${process.env.WOO_KEY}:${process.env.WOO_SECRET}`).toString('base64');
+            const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+            
+            const { data: orders } = await axios.get(
+              `${process.env.WOO_URL}/wp-json/wc/v3/orders`,
+              {
+                headers: { Authorization: `Basic ${wooAuth}` },
+                params: {
+                  status: 'pending',
+                  after: yesterday,
+                  per_page: 50,
+                  orderby: 'date',
+                  order: 'desc'
+                }
+              }
+            );
+
+            console.log(`Encontradas ${orders.length} ordenes pendientes`);
+
+            for (const order of orders) {
+              const phone = order.billing?.phone?.replace(/\D/g, '');
+              if (!phone || phone.length < 10) {
+                console.log(`Orden #${order.number}: sin telefono valido`);
+                continue;
+              }
+
+              // Normalizar a formato internacional Mexico
+              const intlPhone = phone.startsWith('52') ? phone : `52${phone.slice(-10)}`;
+              const localPhone = phone.slice(-10);
+
+              // 2. Verificar si ya fue silenciado (ya recibio recordatorio hoy)
+              try {
+                const { data: silence } = await axios.get(
+                  `${process.env.SUPABASE_URL}/rest/v1/whatsapp_silence`,
+                  {
+                    headers: {
+                      apikey: process.env.SUPABASE_KEY,
+                      Authorization: `Bearer ${process.env.SUPABASE_KEY}`
+                    },
+                    params: {
+                      phone: `eq.${localPhone}`,
+                      silenced_until: `gt.${new Date().toISOString()}`,
+                      select: 'phone'
+                    }
+                  }
+                );
+                if (silence.length > 0) {
+                  console.log(`Orden #${order.number}: ${localPhone} ya recibio recordatorio`);
+                  continue;
+                }
+              } catch (e) {
+                console.error('Error consultando Supabase:', e.message);
+              }
+
+              // 3. Enviar mensaje WhatsApp con plantilla
+              const nombre = order.billing?.first_name || 'cliente';
+              const ordenNum = String(order.number);
+              const total = `${order.total} ${order.currency || 'MXN'}`;
+              const linkPago = `${process.env.WOO_URL}/checkout/order-pay/${order.id}/?pay_for_order=true&key=${order.order_key}`;
+
+              try {
+                await axios.post(
+                  `https://graph.facebook.com/v21.0/${process.env.WA_PHONE_ID}/messages`,
+                  {
+                    messaging_product: 'whatsapp',
+                    to: intlPhone,
+                    type: 'template',
+                    template: {
+                      name: process.env.WA_TEMPLATE,
+                      language: { code: 'es_MX' },
+                      components: [
+                        {
+                          type: 'body',
+                          parameters: [
+                            { type: 'text', text: nombre },
+                            { type: 'text', text: ordenNum },
+                            { type: 'text', text: total }
+                          ]
+                        },
+                        {
+                          type: 'button',
+                          sub_type: 'url',
+                          index: '0',
+                          parameters: [{ type: 'text', text: `${order.id}/?pay_for_order=true&key=${order.order_key}` }]
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    headers: {
+                      Authorization: `Bearer ${process.env.WA_TOKEN}`,
+                      'Content-Type': 'application/json'
+                    }
+                  }
+                );
+                console.log(`✅ Recordatorio enviado: Orden #${order.number} -> ${intlPhone}`);
+
+                // 4. Silenciar en Supabase por 23 horas para evitar que Alma responda
+                await axios.post(
+                  `${process.env.SUPABASE_URL}/rest/v1/whatsapp_silence`,
+                  {
+                    phone: localPhone,
+                    silenced_until: new Date(Date.now() + 23 * 60 * 60 * 1000).toISOString(),
+                    reason: `recordatorio_pago_orden_${order.number}`
+                  },
+                  {
+                    headers: {
+                      apikey: process.env.SUPABASE_KEY,
+                      Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+                      'Content-Type': 'application/json',
+                      Prefer: 'resolution=merge-duplicates'
+                    }
+                  }
+                );
+
+              } catch (e) {
+                console.error(`❌ Error enviando a orden #${order.number}:`, e.response?.data || e.message);
+              }
+
+              // Esperar 1 segundo entre envios para no saturar la API
+              await new Promise(r => setTimeout(r, 1000));
+            }
+
+            console.log('Proceso completado');
