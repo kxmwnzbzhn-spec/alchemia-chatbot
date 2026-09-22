@@ -2,12 +2,8 @@ name: Payment Reminders - The Alchemia Lab
 
 on:
   schedule:
-    # 9 AM hora Mexico (UTC-6) = 15:00 UTC
-    - cron: '0 15 * * *'
-    # 2 PM hora Mexico = 20:00 UTC
-    - cron: '0 20 * * *'
-    # 6 PM hora Mexico = 00:00 UTC (siguiente dia)
-    - cron: '0 0 * * *'
+    # 8 PM hora Mexico (UTC-6) = 02:00 UTC del dia siguiente
+    - cron: '0 2 * * *'
   workflow_dispatch: # Permite correr manualmente
 
 jobs:
